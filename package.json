@@ -1,0 +1,13 @@
+{
+  "name": "nx-azure-cache",
+  "private": true,
+  "license": "MIT",
+  "repository": "github:stevebeauge/nx-azure-cache",
+  "packageManager": "pnpm@11.16.0",
+  "scripts": {
+    "build": "cargo build --release",
+    "test": "cargo test",
+    "build:linux": "node scripts/build-linux.js",
+    "test:plugin": "node --test nx-plugin/nx-azure-cache.test.js && pnpm --dir nx-plugin/e2e install && node --test nx-plugin/e2e/e2e.test.js"
+  }
+}
