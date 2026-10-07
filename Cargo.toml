@@ -1,0 +1,29 @@
+[package]
+name = "nx-azure-cache"
+version = "0.1.0"
+edition = "2024"
+description = "Local gateway for the Nx remote cache, backed by Azure Blob Storage"
+license = "MIT"
+repository = "https://github.com/stevebeauge/nx-azure-cache"
+
+[dependencies]
+async-trait = "0.1"
+axum = "0.8.9"
+azure_core = "1"
+azure_identity = { version = "1.0", features = ["tokio"] }
+azure_storage_blob = "1.1"
+base64 = "0.22"
+futures-util = "0.3.34"
+getrandom = "0.4.3"
+keyring = "4"
+# Same reqwest as the SDK (single TLS stack); `form` is optional in 0.13.
+reqwest = { version = "0.13", default-features = false, features = ["form"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+toml = "1.1.6"
+webbrowser = "1"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util"] }

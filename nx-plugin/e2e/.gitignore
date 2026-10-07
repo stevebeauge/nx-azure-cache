@@ -1,0 +1,5 @@
+node_modules/
+.nx/
+dist/
+# plugin copy made by e2e.test.js, as in a real Workspace
+tools/

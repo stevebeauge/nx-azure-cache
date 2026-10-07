@@ -1,0 +1,11 @@
+{
+  "name": "proj",
+  "targets": {
+    "build": {
+      "command": "node -e \"require('fs').mkdirSync('dist/proj',{recursive:true});require('fs').writeFileSync('dist/proj/out.txt','built')\"",
+      "cache": true,
+      "inputs": ["{projectRoot}/**/*", { "env": "E2E_SEL" }],
+      "outputs": ["{workspaceRoot}/dist/proj"]
+    }
+  }
+}

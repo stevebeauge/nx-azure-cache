@@ -1,0 +1,64 @@
+# Starts the nx-azure-cache Gateway in the background for the rest of the job (Linux agents).
+# Usage: ci/README.md. Local test of the script: ci/test-start.sh.
+parameters:
+  - name: binaryPath # Linux binary (pnpm build:linux), already on the agent
+    type: string
+  - name: azureSubscription # Azure Resource Manager service connection with workload identity federation
+    type: string
+  - name: account # storage account
+    type: string
+  - name: container
+    type: string
+    default: nx-cache
+
+steps:
+  # AzureCLI@2: the task references the service connection and sets the AZURESUBSCRIPTION_*
+  # variables the Gateway reads (pipelines credential). It removes them at the end of the step,
+  # but the Gateway, started during the step, keeps its copy of the environment.
+  - task: AzureCLI@2
+    displayName: 'nx-azure-cache: start the Gateway'
+    continueOnError: true # Safe fallback: a broken service connection does not fail the job
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      # The script only reads environment variables (no Azure macro): ci/test-start.sh
+      # extracts it as is to test it outside Azure DevOps.
+      inlineScript: |
+        bin="$NX_AZURE_CACHE_BIN"
+        log="$AGENT_TEMPDIRECTORY/nx-azure-cache.log"
+        chmod +x "$bin" 2>/dev/null # a pipeline artifact loses the executable bit
+
+        # Host shared by several agents: a Gateway already running belongs to another job
+        # (another Identity, killed when that job ends). This job stays on its local cache.
+        if "$bin" status >/dev/null 2>&1; then
+          echo "##vso[task.logissue type=warning]nx-azure-cache: a Gateway is already running on this port (another job?), remote cache disabled for this job"
+          echo "##vso[task.setvariable variable=NX_AZURE_CACHE_DISABLED]1"
+          exit 0
+        fi
+
+        # Streams redirected to a file: a child holding the step's pipes makes it linger 5 s,
+        # then the agent kills the process tree. The Gateway inherits
+        # VSTS_PROCESS_LOOKUP_ID: the agent kills it at "Finalize Job".
+        nohup "$bin" serve </dev/null >>"$log" 2>&1 &
+        pid=$!
+
+        deadline=$((SECONDS + 60))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+          if "$bin" status --json 2>/dev/null | grep -q '"ready":true'; then
+            echo "nx-azure-cache: Gateway ready (log: $log)"
+            exit 0
+          fi
+          kill -0 "$pid" 2>/dev/null || break # serve exited: no point waiting
+          sleep 1
+        done
+
+        echo "##vso[task.logissue type=warning]nx-azure-cache: Gateway not ready, the job continues on the local cache. Reason below, log: $log"
+        "$bin" status 2>&1
+        exit 0
+    env:
+      NX_AZURE_CACHE_BIN: ${{ parameters.binaryPath }}
+      NX_AZURE_CACHE_ACCOUNT: ${{ parameters.account }}
+      NX_AZURE_CACHE_CONTAINER: ${{ parameters.container }}
+      NX_AZURE_CACHE_CREDENTIAL: pipelines
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken) # secret: never exported without this mapping

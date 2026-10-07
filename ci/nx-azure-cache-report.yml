@@ -1,0 +1,19 @@
+# nx-azure-cache report at the end of the job, even on failure: status (with stats) and log tail.
+# Place it after the Nx steps; the Gateway dies at "Finalize Job". Usage: ci/README.md.
+parameters:
+  - name: binaryPath
+    type: string
+
+steps:
+  - bash: |
+      "$NX_AZURE_CACHE_BIN" status
+      log="$AGENT_TEMPDIRECTORY/nx-azure-cache.log"
+      echo
+      # Without the /health and /stats probes (startup wait, plugin, status) that drown the rest.
+      echo "Last 50 lines of $log, excluding /health and /stats:"
+      grep -vE 'GET "/(health|stats)" ' "$log" | tail -n 50
+      exit 0
+    displayName: 'nx-azure-cache: report'
+    condition: always()
+    env:
+      NX_AZURE_CACHE_BIN: ${{ parameters.binaryPath }}

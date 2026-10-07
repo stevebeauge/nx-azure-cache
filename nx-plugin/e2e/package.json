@@ -1,0 +1,7 @@
+{
+  "name": "nx-azure-cache-e2e",
+  "private": true,
+  "devDependencies": {
+    "nx": "23.2.1"
+  }
+}
