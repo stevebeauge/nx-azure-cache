@@ -1,3 +1,7 @@
+## Language
+
+Everything published to GitHub for this project is in English: issues, comments, triage notes, agent briefs, pull requests, review comments, commit messages, labels. This holds even when the conversation with the maintainer is in another language. Repository content follows the same rule (see `CONTRIBUTING.md`).
+
 ## Agent skills
 
 ### Issue tracker
