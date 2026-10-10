@@ -5,7 +5,7 @@
 > notice.
 
 Remote cache for Nx monorepos, stored in Azure Blob Storage and served to Nx by a Gateway local
-to each machine. Vocabulary: [`CONTEXT.md`](CONTEXT.md); decisions: [`docs/adr/`](docs/adr/);
+to each machine. Vocabulary: [`GLOSSARY.md`](GLOSSARY.md); decisions: [`docs/adr/`](docs/adr/);
 contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Build and run
