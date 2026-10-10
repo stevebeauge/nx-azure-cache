@@ -14,4 +14,4 @@ The five canonical labels, under their default names. See `docs/agents/triage-la
 
 ### Domain docs
 
-A single context: `CONTEXT.md` and `docs/adr/` at the root. See `docs/agents/domain.md`.
+A single context: `GLOSSARY.md` and `docs/adr/` at the root. See `docs/agents/domain.md`.

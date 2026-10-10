@@ -10,7 +10,7 @@ The project is a work in progress: open an issue before a large change.
 - the Azure Pipelines templates in `ci/`;
 - the scripts in `scripts/`, run through the root `package.json`.
 
-Vocabulary is in [`CONTEXT.md`](CONTEXT.md), decisions in [`docs/adr/`](docs/adr/).
+Vocabulary is in [`GLOSSARY.md`](GLOSSARY.md), decisions in [`docs/adr/`](docs/adr/).
 
 ## Prerequisites
 
