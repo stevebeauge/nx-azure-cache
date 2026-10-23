@@ -7,7 +7,8 @@ use crate::{
 };
 use axum::{
     Router,
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
+    http::{HeaderMap, StatusCode},
     middleware,
     routing::{get, post},
 };
@@ -16,7 +17,10 @@ use std::{
     net::SocketAddr,
     sync::{Arc, RwLock, atomic::AtomicU8},
 };
-use tokio::{net::TcpListener, sync::Semaphore};
+use tokio::{
+    net::TcpListener,
+    sync::{Notify, Semaphore},
+};
 
 /// State shared by the handlers.
 pub struct AppState {
@@ -32,6 +36,8 @@ pub struct AppState {
     pub azure: Arc<Semaphore>,
     /// Per-Workspace counters since startup, read by `/stats`.
     pub stats: stats::Stats,
+    /// Graceful stop, asked by `/shutdown`.
+    pub stop: Notify,
 }
 
 impl AppState {
@@ -49,6 +55,7 @@ impl AppState {
             write: AtomicU8::new(cache::WRITE_UNKNOWN),
             azure: Arc::new(Semaphore::new(16)),
             stats: Default::default(),
+            stop: Notify::new(),
         }
     }
 
@@ -115,6 +122,7 @@ async fn run() -> Result<i32, String> {
         .route("/health", get(health::handler))
         .route("/stats", get(stats::handler))
         .route("/reload", post(identity::reload))
+        .route("/shutdown", post(shutdown))
         .fallback(cache::handler)
         // An Entry can weigh hundreds of MB; the body is read as a stream.
         .layer(DefaultBodyLimit::disable())
@@ -122,16 +130,28 @@ async fn run() -> Result<i32, String> {
             state.clone(),
             access_log::middleware,
         ))
-        .with_state(state);
+        .with_state(state.clone());
 
     journal::line(&format!(
         "nx-azure-cache {} listening on http://{addr}",
         env!("CARGO_PKG_VERSION")
     ));
     axum::serve(listener, app)
+        .with_graceful_shutdown(async move { state.stop.notified().await })
         .await
         .map_err(|e| e.to_string())?;
     Ok(0)
+}
+
+/// `POST /shutdown`: graceful stop, so that a newer Gateway can take the port (ADR 0005).
+/// The Local token keeps other local users and web pages from stopping it.
+async fn shutdown(State(state): State<Arc<AppState>>, headers: HeaderMap) -> StatusCode {
+    if !state.token.matches_header(&headers) {
+        return StatusCode::UNAUTHORIZED;
+    }
+    journal::line("stopping: asked by /shutdown");
+    state.stop.notify_one();
+    StatusCode::OK
 }
 
 /// The port is taken: is it a Gateway (recognised `/health` response)?
