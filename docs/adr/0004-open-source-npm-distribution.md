@@ -7,7 +7,7 @@ The public repository is a fresh GitHub repository (`stevebeauge/nx-azure-cache`
 Distribution:
 - one npm package carrying the **Activation plugin** and a command; the **Gateway** binary comes from a per-platform sub-package (`win32-x64`, `linux-x64` musl) in `optionalDependencies`, filtered by `os`/`cpu`, **without `postinstall`**. It works with npm, pnpm and Bun; Yarn 2+ too, with its own config;
 - the Workspace adds it to `devDependencies` and declares `"plugin": "nx-azure-cache"` in `nx.json`: no more copy under `tools/`;
-- a single version for the plugin and the binaries, tag `vX.Y.Z`; GitHub Actions builds and publishes to npm (trusted publishing where possible, no secret).
+- a single version for the plugin and the binaries, tag `vX.Y.Z`; GitHub Actions builds and publishes to npm (trusted publishing where possible, no secret). How publication works: [ADR 0006](0006-npm-publication-from-ci-approved-by-hand.md).
 
 _Superseded by [ADR 0005](0005-gateway-started-on-demand.md)._ Developer machine: `pnpm exec nx-azure-cache install --account … --tenant … --client-id …` copies itself to a fixed location (`%LOCALAPPDATA%\nx-azure-cache\bin`, `~/.local/bin`), stops the old Gateway process, replaces the binary, writes the settings to the profile's `config.toml` and restarts it. The same command serves first install and updates. There is no self-update: the plugin reports a Gateway older than its package and suggests the command, never failing a run; a newer Gateway triggers nothing, backward compatibility on `/health` covers it. Per-Workspace settings in `nx.json` are left aside until several settings scopes are needed.
 
