@@ -4,6 +4,15 @@ Everything published to GitHub for this project is in English: issues, comments,
 
 ## Agent skills
 
+### Workflow
+
+Every step of work in this repo runs through its `mattpocock-skills` skill, before the step starts:
+
+- implementing a ticket: `tdd`, at seams agreed with the maintainer, then `code-review`;
+- a bug: `diagnosing-bugs`;
+- a pull request body: `pr`;
+- a plan or ticket still open to question: ask the maintainer to run `/mattpocock-skills:grill-with-docs` (manual-only, like `implement`).
+
 ### Issue tracker
 
 Issues live in the GitHub Issues of `stevebeauge/nx-azure-cache` (`gh` CLI). See `docs/agents/issue-tracker.md`.
