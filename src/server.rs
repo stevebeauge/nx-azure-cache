@@ -7,15 +7,17 @@ use crate::{
 };
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Request, State},
     http::{HeaderMap, StatusCode},
-    middleware,
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
 };
 use std::{
     io::Write,
     net::SocketAddr,
-    sync::{Arc, RwLock, atomic::AtomicU8},
+    sync::{Arc, Mutex, RwLock, atomic::AtomicU8},
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
@@ -36,8 +38,9 @@ pub struct AppState {
     pub azure: Arc<Semaphore>,
     /// Per-Workspace counters since startup, read by `/stats`.
     pub stats: stats::Stats,
-    /// Graceful stop, asked by `/shutdown`.
+    /// Graceful stop, asked by `/shutdown` or the idle limit.
     pub stop: Notify,
+    pub last_request: Mutex<tokio::time::Instant>,
 }
 
 impl AppState {
@@ -56,6 +59,7 @@ impl AppState {
             azure: Arc::new(Semaphore::new(16)),
             stats: Default::default(),
             stop: Notify::new(),
+            last_request: Mutex::new(tokio::time::Instant::now()),
         }
     }
 
@@ -118,6 +122,10 @@ async fn run() -> Result<i32, String> {
     // An unavailable Identity does not prevent serving: everything becomes a miss.
     let state = Arc::new(AppState::new(config, token, None));
     identity::start(&state, &|k| std::env::var(k).ok()).await;
+    if state.config.idle_minutes > 0 {
+        let limit = Duration::from_secs(state.config.idle_minutes * 60);
+        tokio::spawn(stop_when_idle(state.clone(), limit));
+    }
     let app = Router::new()
         .route("/health", get(health::handler))
         .route("/stats", get(stats::handler))
@@ -130,6 +138,7 @@ async fn run() -> Result<i32, String> {
             state.clone(),
             access_log::middleware,
         ))
+        .layer(middleware::from_fn_with_state(state.clone(), touch))
         .with_state(state.clone());
 
     journal::line(&format!(
@@ -154,10 +163,53 @@ async fn shutdown(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Sta
     StatusCode::OK
 }
 
+/// Records the time of each request, for the idle stop.
+async fn touch(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    *state.last_request.lock().unwrap() = tokio::time::Instant::now();
+    next.run(req).await
+}
+
+/// Asks for a stop once `limit` has passed without a request; the next Nx run starts the
+/// Gateway again.
+async fn stop_when_idle(state: Arc<AppState>, limit: Duration) {
+    loop {
+        let deadline = *state.last_request.lock().unwrap() + limit;
+        if tokio::time::Instant::now() >= deadline {
+            journal::line(&format!("stopping: no request for {} min", limit.as_secs() / 60));
+            state.stop.notify_one();
+            return;
+        }
+        tokio::time::sleep_until(deadline).await;
+    }
+}
+
 /// The port is taken: is it a Gateway (recognised `/health` response)?
 pub async fn is_gateway(port: u16) -> bool {
     matches!(
         crate::status::get(port, "/health", None).await,
         Some((_, body)) if body["service"] == "nx-azure-cache"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_stop_waits_for_the_limit_after_the_last_request() {
+        let token = LocalToken("0".repeat(64));
+        let state = Arc::new(AppState::new(Config::default(), token, None));
+        let watcher = tokio::spawn(stop_when_idle(state.clone(), Duration::from_secs(60)));
+        tokio::time::sleep(Duration::from_secs(40)).await;
+        *state.last_request.lock().unwrap() = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_secs(40)).await;
+        assert!(!watcher.is_finished(), "stopped 40 s after a request");
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        assert!(watcher.is_finished(), "still running 70 s after the last request");
+        // The stop is kept even when nobody waits for it yet.
+        tokio::time::timeout(Duration::from_secs(1), state.stop.notified())
+            .await
+            .unwrap();
+    }
 }
