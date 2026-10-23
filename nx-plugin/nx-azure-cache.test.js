@@ -14,7 +14,10 @@ const TOKEN = 'NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN';
 const TOKEN_VALUE = 'ab'.repeat(32);
 const HEALTHY = { service: 'nx-azure-cache', version: '0.1.0', identity: { ready: true, kind: 'user' }, write: 'unknown' };
 
-let savedEnv, lines, server, port, configDir;
+// The real Gateway, for the start cases (`pnpm test:plugin` builds it first).
+const BIN = path.join(__dirname, '..', 'target', 'debug', process.platform === 'win32' ? 'nx-azure-cache.exe' : 'nx-azure-cache');
+
+let savedEnv, lines, server, port, configDir, started;
 
 /** Starts a fake Gateway whose `/health` is served by `handler`. */
 async function gateway(handler) {
@@ -27,11 +30,20 @@ const json = (body) => (req, res) => res.end(typeof body === 'string' ? body : J
 
 beforeEach(() => {
   savedEnv = { ...process.env };
-  for (const k of [SERVER, TOKEN, 'NX_AZURE_CACHE_DISABLED', 'NX_AZURE_CACHE_PORT']) delete process.env[k];
-  // Local token in a throwaway config directory, at both possible locations.
+  for (const k of [SERVER, TOKEN, 'NX_AZURE_CACHE_DISABLED', 'NX_AZURE_CACHE_PORT', 'NX_AZURE_CACHE_BIN', 'CI']) {
+    delete process.env[k];
+  }
+  // A started Gateway must not pick the machine's Identity, nor an agent's.
+  for (const k of ['NX_AZURE_CACHE_ACCOUNT', 'NX_AZURE_CACHE_CREDENTIAL', 'SYSTEM_OIDCREQUESTURI', 'AZURE_FEDERATED_TOKEN_FILE']) {
+    delete process.env[k];
+  }
+  process.env.NX_AZURE_CACHE_TOKEN_STORE = 'file';
+  // Local token in a throwaway config directory, at both possible locations; logs there too.
   configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nx-azure-cache-'));
   process.env.APPDATA = configDir;
   process.env.XDG_CONFIG_HOME = configDir;
+  process.env.LOCALAPPDATA = configDir;
+  process.env.XDG_DATA_HOME = configDir;
   fs.mkdirSync(path.join(configDir, 'nx-azure-cache'));
   fs.writeFileSync(path.join(configDir, 'nx-azure-cache', 'local-token'), TOKEN_VALUE + '\n');
   lines = [];
@@ -46,8 +58,37 @@ afterEach(async () => {
     await new Promise((r) => server.close(r));
     server = undefined;
   }
+  if (started) {
+    // Stops the real Gateway, then waits for it to release its log before removing the directory.
+    await fetch(`http://127.0.0.1:${started}/shutdown`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN_VALUE}` },
+    }).catch(() => {});
+    while ((await health(started)) !== null) await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 200));
+    started = undefined;
+  }
   fs.rmSync(configDir, { recursive: true, force: true });
 });
+
+/** `/health` body of the port, or `null` when nothing answers. */
+async function health(p) {
+  try {
+    return await (await fetch(`http://127.0.0.1:${p}/health`)).json();
+  } catch {
+    return null;
+  }
+}
+
+/** A port nothing listens on, given to the plugin through `NX_AZURE_CACHE_PORT`. */
+async function freePort() {
+  const s = http.createServer();
+  await new Promise((r) => s.listen(0, '127.0.0.1', r));
+  const p = s.address().port;
+  await new Promise((r) => s.close(r));
+  process.env.NX_AZURE_CACHE_PORT = String(p);
+  return p;
+}
 
 /** Checks that nothing is set and that a single line matches `pattern`. */
 function off(pattern) {
@@ -73,11 +114,38 @@ test('options.port takes precedence over NX_AZURE_CACHE_PORT', async () => {
   assert.equal(process.env[SERVER], `http://127.0.0.1:${port}/d`);
 });
 
-test('no Gateway', async () => {
-  await gateway(json(HEALTHY));
-  server.close();
+test('no Gateway and no binary for the platform', async () => {
+  await freePort();
   await preTasksExecution({ workspace: 'd' });
-  off(/no Gateway/);
+  off(/no Gateway binary for /);
+});
+
+test('no Gateway: starts it, with the nx.json settings', async () => {
+  started = await freePort();
+  process.env.NX_AZURE_CACHE_BIN = BIN;
+  await preTasksExecution({ workspace: 'd', account: 'acc' });
+  // The account came through: the Gateway now lacks an Identity, not an account.
+  off(/no Identity available/);
+  assert.equal((await health(started)).version, '0.1.0');
+});
+
+test('no Gateway, start fails: Safe fallback once the wait runs out', async () => {
+  await freePort();
+  process.env.NX_AZURE_CACHE_BIN = path.join(configDir, 'missing.exe');
+  const t0 = Date.now();
+  await preTasksExecution({ workspace: 'd' });
+  off(/no Gateway on port/);
+  assert.ok(Date.now() - t0 < 7000);
+});
+
+test('CI: nothing is started', async () => {
+  const p = await freePort();
+  process.env.CI = 'true';
+  process.env.NX_AZURE_CACHE_BIN = BIN;
+  await preTasksExecution({ workspace: 'd' });
+  started = (await health(p)) ? p : undefined; // stops a wrongly started Gateway
+  off(/no Gateway on port/);
+  assert.equal(started, undefined, 'a Gateway was started');
 });
 
 test('ready=false: the Gateway reason is passed through', async () => {
