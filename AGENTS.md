@@ -6,12 +6,13 @@ Everything published to GitHub for this project is in English: issues, comments,
 
 ### Workflow
 
-Every step of work in this repo runs through its `mattpocock-skills` skill, before the step starts:
+Work in this repo goes through the `mattpocock-skills` skills: before a step, pick the one that fits it. Common fits:
 
 - implementing a ticket: `tdd`, at seams agreed with the maintainer, then `code-review`;
 - a bug: `diagnosing-bugs`;
-- a pull request body: `pr`;
-- a plan or ticket still open to question: ask the maintainer to run `/mattpocock-skills:grill-with-docs` (manual-only, like `implement`).
+- a pull request body: `pr`.
+
+Manual-only skills (`implement`, `grill-with-docs`, `wayfinder`, `to-tickets`…) are started by the maintainer: when one fits, say which and why, for example `grill-with-docs` for a plan or ticket still open to question, `wayfinder` for work larger than one session.
 
 ### Issue tracker
 
