@@ -30,7 +30,7 @@ _Avoid_: account, user
 Random value specific to one user of a machine, shared between the **Activation plugin** and the **Gateway**. It prevents other local users from using the gateway. It is not an Entra token.
 
 **Activation plugin**:
-Nx plugin that, before tasks run, sets the remote cache URL if the **Gateway** is healthy, and sets nothing otherwise.
+Nx plugin that, before tasks run, starts the **Gateway** if none is running (or if it is older than the plugin), then sets the remote cache URL if the Gateway is healthy, and sets nothing otherwise.
 
 ## Relationships
 
