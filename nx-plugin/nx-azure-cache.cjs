@@ -6,7 +6,8 @@
 // Shipped as `.cjs`: a Workspace with `"type": "module"` would load a `.js` as an ES module,
 // and its `require` would make every `nx` command fail.
 //
-// Before tasks run, starts the Gateway if none is running (ADR 0005), then sets the remote
+// Before tasks run, starts the Gateway if none is running or if it is older than this plugin
+// (ADR 0005), then sets the remote
 // cache URL if the Gateway is healthy, and sets nothing otherwise (Safe fallback). Nx ignores the hook's return value: only assignments
 // to `process.env` reach the client, daemon and isolation included.
 'use strict';
@@ -16,6 +17,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const VERSION = '0.1.0';
 const SERVER = 'NX_SELF_HOSTED_REMOTE_CACHE_SERVER';
 const TOKEN = 'NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN';
 /** How long a run waits for a Gateway it started. */
@@ -34,6 +36,23 @@ function tokenPath(env) {
       ? env.APPDATA
       : env.XDG_CONFIG_HOME || path.join(env.HOME || os.homedir(), '.config');
   return path.join(base, 'nx-azure-cache', 'local-token');
+}
+
+/** `a < b` for `x.y.z` versions; `false` if either is unreadable. */
+function older(a, b) {
+  const parse = (v) => (/^\d+\.\d+\.\d+$/.test(v || '') ? v.split('.').map(Number) : null);
+  const [pa, pb] = [parse(a), parse(b)];
+  if (!pa || !pb) return false;
+  const i = pa.findIndex((n, k) => n !== pb[k]);
+  return i >= 0 && pa[i] < pb[i];
+}
+
+function readToken(env) {
+  try {
+    return fs.readFileSync(tokenPath(env), 'utf8').trim();
+  } catch {
+    return '';
+  }
 }
 
 /** Gateway binary: `NX_AZURE_CACHE_BIN`, else the platform package (#2). */
@@ -100,6 +119,16 @@ async function activate(options, env) {
   const mayStart = !env.CI || env.CI === 'false';
 
   let result = await probe(port);
+  if (mayStart && result.health && older(result.health.version, VERSION)) {
+    console.log(`[nx-azure-cache] replacing Gateway ${result.health.version} with ${VERSION}`);
+    await fetch(`http://127.0.0.1:${port}/shutdown`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readToken(env)}` },
+      signal: AbortSignal.timeout(1000),
+    }).catch(() => {});
+    result = await waitFor(port, (r) => r.absent);
+    if (!result.absent) return `Gateway ${result.health ? result.health.version : ''} did not stop`;
+  }
   if (mayStart && result.absent) {
     const bin = binaryPath(env);
     if (!bin) return `no Gateway binary for ${process.platform}-${process.arch}`;
@@ -116,14 +145,8 @@ async function activate(options, env) {
     return (health.identity && health.identity.reason) || 'Identity not ready';
   }
 
-  const file = tokenPath(env);
-  let token;
-  try {
-    token = fs.readFileSync(file, 'utf8').trim();
-  } catch {
-    token = '';
-  }
-  if (!/^[0-9a-f]{64}$/i.test(token)) return `unreadable local token (${file})`;
+  const token = readToken(env);
+  if (!/^[0-9a-f]{64}$/i.test(token)) return `unreadable local token (${tokenPath(env)})`;
 
   // Assignments, not a return value: this is what Nx propagates.
   env[SERVER] = `http://127.0.0.1:${port}/${workspace}`;

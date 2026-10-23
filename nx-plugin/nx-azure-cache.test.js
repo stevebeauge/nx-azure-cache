@@ -138,6 +138,44 @@ test('no Gateway, start fails: Safe fallback once the wait runs out', async () =
   assert.ok(Date.now() - t0 < 7000);
 });
 
+test('older Gateway: stopped with the token, then replaced', async () => {
+  let auth;
+  await gateway((req, res) => {
+    if (req.method === 'POST' && req.url === '/shutdown') {
+      auth = req.headers.authorization;
+      res.end();
+      server.closeAllConnections();
+      server.close();
+      return;
+    }
+    res.end(JSON.stringify({ ...HEALTHY, version: '0.0.9' }));
+  });
+  started = port;
+  process.env.NX_AZURE_CACHE_BIN = BIN;
+  await preTasksExecution({ workspace: 'd' });
+  assert.equal(auth, `Bearer ${TOKEN_VALUE}`);
+  assert.match(lines[0], /replacing Gateway 0\.0\.9 with 0\.1\.0/);
+  assert.equal((await health(port)).version, '0.1.0');
+});
+
+test('newer, equal or unreadable version: used as is', async () => {
+  for (const version of ['0.2.0', '0.1.0', '1.0', undefined]) {
+    let posted = false;
+    await gateway((req, res) => {
+      if (req.method === 'POST') posted = true;
+      res.end(JSON.stringify({ ...HEALTHY, version }));
+    });
+    await preTasksExecution({ workspace: 'd' });
+    assert.equal(process.env[SERVER], `http://127.0.0.1:${port}/d`, `version ${version}`);
+    assert.equal(posted, false, `version ${version}`);
+    assert.deepEqual(lines, []);
+    delete process.env[SERVER];
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    server = undefined;
+  }
+});
+
 test('CI: nothing is started', async () => {
   const p = await freePort();
   process.env.CI = 'true';
