@@ -14,6 +14,7 @@ const KEYS: &[&str] = &[
     "client_id",
     "managed_client_id",
     "token_store",
+    "idle_minutes",
 ];
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,6 +31,8 @@ pub struct Config {
     pub client_id: Option<String>,
     pub managed_client_id: Option<String>,
     pub token_store: String,
+    /// Minutes without a request before the Gateway exits; `0` = never.
+    pub idle_minutes: u64,
 }
 
 impl Default for Config {
@@ -43,6 +46,7 @@ impl Default for Config {
             client_id: None,
             managed_client_id: None,
             token_store: "keyring".into(),
+            idle_minutes: 180,
         }
     }
 }
@@ -90,7 +94,7 @@ impl Config {
         for key in KEYS {
             let var = format!("NX_AZURE_CACHE_{}", key.to_uppercase());
             if let Ok(raw) = std::env::var(&var) {
-                let value = if *key == "port" {
+                let value = if matches!(*key, "port" | "idle_minutes") {
                     toml::Value::Integer(raw.parse().map_err(|_| format!("invalid {var}: {raw}"))?)
                 } else {
                     toml::Value::String(raw)

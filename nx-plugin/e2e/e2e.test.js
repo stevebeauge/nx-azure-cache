@@ -1,4 +1,5 @@
-// e2e: real Nx 23.2.1 against an in-memory fake Gateway, with and without the daemon.
+// e2e: real Nx 23.2.1 against an in-memory fake Gateway, then against the real one started by
+// the plugin, with and without the daemon.
 // Prerequisite: `pnpm install` in this directory (done by `pnpm test:plugin`).
 'use strict';
 
@@ -65,7 +66,7 @@ function nx(args, daemon, extra = {}) {
 // Clears the local cache and stops the daemon. `--only-cache` is not enough: Nx's database,
 // left in place, still reports a local hit.
 const reset = () => nx(['reset'], false);
-const build = (daemon, sel = '') => nx(['run', 'proj:build'], daemon, { E2E_SEL: sel });
+const build = (daemon, sel = '', extra = {}) => nx(['run', 'proj:build'], daemon, { E2E_SEL: sel, ...extra });
 
 before(async () => {
   // As in a real Workspace: the plugin is copied under `tools/`.
@@ -128,5 +129,47 @@ for (const daemon of [false, true]) {
     const out = daemon ? fs.readFileSync(DAEMON_LOG, 'utf8') : r.out;
     assert.match(out, /\[nx-azure-cache\] remote cache off: no Gateway/);
     if (daemon) assert.doesNotMatch(r.out, /nx-azure-cache/);
+  });
+}
+
+// The real Gateway (`pnpm test:plugin` builds it first).
+const BIN = path.join(ROOT, '..', '..', 'target', 'debug', process.platform === 'win32' ? 'nx-azure-cache.exe' : 'nx-azure-cache');
+
+async function health(p) {
+  try {
+    return await (await fetch(`http://127.0.0.1:${p}/health`)).json();
+  } catch {
+    return null;
+  }
+}
+
+for (const daemon of [false, true]) {
+  test(`no Gateway: the run starts it, it outlives Nx, the next run reuses it (daemon: ${daemon})`, async () => {
+    server.close();
+    await reset();
+    const s = http.createServer();
+    await new Promise((r) => s.listen(0, '127.0.0.1', r));
+    port = s.address().port;
+    await new Promise((r) => s.close(r));
+    const extra = { NX_AZURE_CACHE_BIN: BIN, NX_AZURE_CACHE_TOKEN_STORE: 'file', LOCALAPPDATA: configDir, XDG_DATA_HOME: configDir };
+    try {
+      const first = await build(daemon, '', extra);
+      assert.equal(first.code, 0, first.out);
+      await reset(); // also stops the Nx daemon, parent of the Gateway when it is used
+      assert.equal((await health(port))?.version, '0.1.0', 'the Gateway did not outlive Nx');
+
+      const second = await build(daemon, '', extra);
+      assert.equal(second.code, 0, second.out);
+      const logs = path.join(configDir, 'nx-azure-cache', 'logs');
+      const text = fs.readdirSync(logs).map((f) => fs.readFileSync(path.join(logs, f), 'utf8')).join('');
+      assert.equal(text.split(`listening on http://127.0.0.1:${port}`).length - 1, 1, 'started twice');
+    } finally {
+      await fetch(`http://127.0.0.1:${port}/shutdown`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN_VALUE}` },
+      }).catch(() => {});
+      while ((await health(port)) !== null) await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 200)); // log file released before `after` removes it
+    }
   });
 }

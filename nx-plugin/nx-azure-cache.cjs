@@ -6,17 +6,28 @@
 // Shipped as `.cjs`: a Workspace with `"type": "module"` would load a `.js` as an ES module,
 // and its `require` would make every `nx` command fail.
 //
-// Before tasks run, sets the remote cache URL if the local Gateway is healthy, and sets
-// nothing otherwise (Safe fallback). Nx ignores the hook's return value: only assignments
-// to `process.env` reach the client, daemon and isolation included.
+// Before tasks run, starts the Gateway if none is running or if it is older than this plugin
+// (ADR 0005), then sets the remote cache URL if the Gateway is healthy, and sets nothing
+// otherwise (Safe fallback). Nx ignores the hook's return value: only assignments to
+// `process.env` reach the client, daemon and isolation included.
 'use strict';
 
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const VERSION = '0.1.0';
 const SERVER = 'NX_SELF_HOSTED_REMOTE_CACHE_SERVER';
 const TOKEN = 'NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN';
+/** How long a run waits for a Gateway it started. */
+const START_WAIT_MS = 5000;
+/** Plugin options passed to the Gateway it starts. */
+const SETTINGS = {
+  account: 'NX_AZURE_CACHE_ACCOUNT',
+  tenantId: 'NX_AZURE_CACHE_TENANT_ID',
+  clientId: 'NX_AZURE_CACHE_CLIENT_ID',
+};
 
 /** Local token path, same as the Gateway's (`src/config.rs`). */
 function tokenPath(env) {
@@ -27,13 +38,36 @@ function tokenPath(env) {
   return path.join(base, 'nx-azure-cache', 'local-token');
 }
 
-/** Returns why the remote cache stays off, or `null` once it is set. */
-async function activate(options, env) {
-  const workspace = options && options.workspace;
-  if (!workspace) return 'option `workspace` missing from nx.json';
-  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(workspace)) return `invalid workspace: ${workspace}`;
-  const port = Number((options && options.port) || env.NX_AZURE_CACHE_PORT || 7484);
+/** `a < b` for `x.y.z` versions; `false` if either is unreadable. */
+function older(a, b) {
+  const parse = (v) => (/^\d+\.\d+\.\d+$/.test(v || '') ? v.split('.').map(Number) : null);
+  const [pa, pb] = [parse(a), parse(b)];
+  if (!pa || !pb) return false;
+  const i = pa.findIndex((n, k) => n !== pb[k]);
+  return i >= 0 && pa[i] < pb[i];
+}
 
+function readToken(env) {
+  try {
+    return fs.readFileSync(tokenPath(env), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+/** Gateway binary: `NX_AZURE_CACHE_BIN`, else the platform package (#2). */
+function binaryPath(env) {
+  if (env.NX_AZURE_CACHE_BIN) return env.NX_AZURE_CACHE_BIN;
+  const exe = process.platform === 'win32' ? 'nx-azure-cache.exe' : 'nx-azure-cache';
+  try {
+    return require.resolve(`nx-azure-cache-${process.platform}-${process.arch}/${exe}`);
+  } catch {
+    return null;
+  }
+}
+
+/** `/health` of the port: `{ health }`, or `{ reason, absent }` when nothing usable answers. */
+async function probe(port) {
   let health;
   try {
     // The timeout covers both the connection and reading the body.
@@ -42,25 +76,77 @@ async function activate(options, env) {
     });
     health = await res.json();
   } catch (e) {
-    if (e.name === 'TimeoutError') return `Gateway unresponsive on port ${port} (> 200 ms)`;
-    if (e.name === 'SyntaxError') return `unreadable /health response on port ${port}`;
-    return `no Gateway on port ${port}`;
+    if (e.name === 'TimeoutError') return { reason: `Gateway unresponsive on port ${port} (> 200 ms)` };
+    if (e.name === 'SyntaxError') return { reason: `unreadable /health response on port ${port}` };
+    return { reason: `no Gateway on port ${port}`, absent: true };
   }
   if (!health || health.service !== 'nx-azure-cache') {
-    return `port ${port} is not held by a Gateway`;
+    return { reason: `port ${port} is not held by a Gateway` };
   }
+  return { health };
+}
+
+/** Starts `serve` detached: it outlives this run, like the Nx daemon. */
+function start(bin, options, env, port) {
+  const childEnv = { ...env, NX_AZURE_CACHE_PORT: String(port) };
+  for (const [option, variable] of Object.entries(SETTINGS)) {
+    if (options[option]) childEnv[variable] = String(options[option]);
+  }
+  const child = spawn(bin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true, env: childEnv });
+  // Uncaught, a failed spawn (missing file) would crash Nx; it shows up as the wait running out.
+  child.on('error', () => {});
+  child.unref();
+}
+
+/** Polls `/health` until `done(result)` or the start budget runs out; returns the last result. */
+async function waitFor(port, done) {
+  const deadline = Date.now() + START_WAIT_MS;
+  for (;;) {
+    const result = await probe(port);
+    if (done(result) || Date.now() >= deadline) return result;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/** Returns why the remote cache stays off, or `null` once it is set. */
+async function activate(options, env) {
+  const workspace = options && options.workspace;
+  if (!workspace) return 'option `workspace` missing from nx.json';
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(workspace)) return `invalid workspace: ${workspace}`;
+  const port = Number((options && options.port) || env.NX_AZURE_CACHE_PORT || 7484);
+
+  // In CI, the start script owns the Gateway (ADR 0004).
+  const mayStart = !env.CI || env.CI === 'false';
+
+  let result = await probe(port);
+  if (mayStart && result.health && older(result.health.version, VERSION)) {
+    console.log(`[nx-azure-cache] replacing Gateway ${result.health.version} with ${VERSION}`);
+    await fetch(`http://127.0.0.1:${port}/shutdown`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${readToken(env)}` },
+      signal: AbortSignal.timeout(1000),
+    }).catch(() => {});
+    result = await waitFor(port, (r) => r.absent);
+    if (!result.absent) return `Gateway ${result.health ? result.health.version : ''} did not stop`;
+  }
+  if (mayStart && result.absent) {
+    const bin = binaryPath(env);
+    if (!bin) return `no Gateway binary for ${process.platform}-${process.arch}`;
+    start(bin, options, env, port);
+    // The Identity may still be acquiring its token: that run then goes on without the cache.
+    result = await waitFor(
+      port,
+      (r) => r.health && r.health.identity && r.health.identity.reason !== 'acquiring token',
+    );
+  }
+  if (result.reason) return result.reason;
+  const health = result.health;
   if (!health.identity || health.identity.ready !== true) {
     return (health.identity && health.identity.reason) || 'Identity not ready';
   }
 
-  const file = tokenPath(env);
-  let token;
-  try {
-    token = fs.readFileSync(file, 'utf8').trim();
-  } catch {
-    token = '';
-  }
-  if (!/^[0-9a-f]{64}$/i.test(token)) return `unreadable local token (${file})`;
+  const token = readToken(env);
+  if (!/^[0-9a-f]{64}$/i.test(token)) return `unreadable local token (${tokenPath(env)})`;
 
   // Assignments, not a return value: this is what Nx propagates.
   env[SERVER] = `http://127.0.0.1:${port}/${workspace}`;
