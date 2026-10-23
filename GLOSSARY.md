@@ -32,6 +32,10 @@ Random value specific to one user of a machine, shared between the **Activation 
 **Activation plugin**:
 Nx plugin that, before tasks run, starts the **Gateway** if none is running (or if it is older than the plugin), then sets the remote cache URL if the Gateway is healthy, and sets nothing otherwise.
 
+**Platform package**:
+npm package carrying the **Gateway** binary for one OS and CPU (`@nx-azure-cache/win32-x64`, `@nx-azure-cache/linux-x64`), installed only where its `os` and `cpu` fields match, as an optional dependency of the `nx-azure-cache` package.
+_Avoid_: sub-package
+
 ## Relationships
 
 - A machine runs at most one **Gateway**, which serves several **Workspaces** and several worktrees.
