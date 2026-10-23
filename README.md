@@ -58,7 +58,7 @@ Optional TOML file:
 - Linux: `$XDG_CONFIG_HOME/nx-azure-cache/config.toml` (`~/.config` by default).
 
 Each key (`port`, `account`, `container`, `credential`, `tenant_id`, `client_id`,
-`managed_client_id`, `token_store`) can be overridden by `NX_AZURE_CACHE_<KEY>`, which takes
+`managed_client_id`, `token_store`, `idle_minutes`) can be overridden by `NX_AZURE_CACHE_<KEY>`, which takes
 precedence over the file:
 
 ```sh
@@ -118,7 +118,7 @@ nx-azure-cache logout
   There is no default: without them, `login` fails and names the missing keys.
 - Only the refresh token is kept, in the system keyring (`token_store = "keyring"`, default:
   Credential Manager, Secret Service). Without a keyring (Linux without Secret Service,
-  `systemd --user` service), `login` fails and points to `token_store = "file"`: the refresh
+  SSH session), `login` fails and points to `token_store = "file"`: the refresh
   token is then written in clear text to `refresh_token`, next to `config.toml`, mode 0600 on
   Linux, atomically. `logout` clears both locations.
 - A running Gateway picks up the new Identity without restarting: `login` and `logout` send it
@@ -165,18 +165,41 @@ extracting Entries.
 1. Copy `nx-plugin/nx-azure-cache.cjs` into the Workspace's `tools/` and commit it, keeping the
    `.cjs` extension: renamed to `.js` in a `"type": "module"` Workspace, it would make every
    `nx` command fail. The version is in the file header.
-2. Declare it in `nx.json`, with the Workspace identifier (`^[a-z0-9][a-z0-9-]{0,62}$`):
+2. Declare it in `nx.json`, with the Workspace identifier (`^[a-z0-9][a-z0-9-]{0,62}$`) and
+   the settings of the Gateway it starts:
 
    ```json
    {
      "plugins": [
-       { "plugin": "./tools/nx-azure-cache.cjs", "options": { "workspace": "my-workspace" } }
+       {
+         "plugin": "./tools/nx-azure-cache.cjs",
+         "options": {
+           "workspace": "my-workspace",
+           "account": "mystorageaccount",
+           "tenantId": "00000000-0000-0000-0000-000000000000",
+           "clientId": "00000000-0000-0000-0000-000000000000"
+         }
+       }
      ]
    }
    ```
 
-Before each run, the plugin queries `http://127.0.0.1:<port>/health` (200 ms at most). If the
-Gateway is healthy, it sets `NX_SELF_HOSTED_REMOTE_CACHE_SERVER`
+Before each run, the plugin queries `http://127.0.0.1:<port>/health` (200 ms at most).
+
+- **No Gateway**: it starts one (`serve`), detached and without a window, like the Nx daemon:
+  the Gateway outlives the run and serves the next ones, from any Workspace. `account`,
+  `tenantId` and `clientId` are passed to it as `NX_AZURE_CACHE_ACCOUNT`,
+  `NX_AZURE_CACHE_TENANT_ID` and `NX_AZURE_CACHE_CLIENT_ID`. The run waits 5 s at most; if the
+  Identity is not ready by then, it goes on without the remote cache.
+- **Gateway older than the plugin**: it asks it to stop (`POST /shutdown`, Local token), then
+  starts its own. A newer or equal Gateway is used as is.
+- **Binary**: `NX_AZURE_CACHE_BIN`, otherwise the platform package
+  `nx-azure-cache-<platform>-<arch>` resolved next to the plugin (not published yet).
+- **CI** (`CI` set): it starts nothing; the CI templates start the Gateway.
+- A Gateway started by another Workspace keeps that Workspace's settings: one storage account
+  per machine is assumed.
+
+If the Gateway is healthy, it sets `NX_SELF_HOSTED_REMOTE_CACHE_SERVER`
 (`http://127.0.0.1:<port>/<workspace>`) and `NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN` (the
 Local token). Otherwise it sets nothing, prints a line `[nx-azure-cache] remote cache off:
 <reason>` and Nx runs on its local cache. It never fails a run.
@@ -231,27 +254,21 @@ kept 7 days:
 
 The file's day is the UTC day. The log contains no secret: no token, no header, no query string.
 
-## Automatic start
+## Stopping and removing
 
-Copy the binary to its final location, then, from that location:
+Nothing is installed: the Activation plugin starts the Gateway when needed, and the Gateway exits
+after `idle_minutes` (180 by default, `0` = never) without a request. To stop it now:
 
 ```sh
-nx-azure-cache install     # sets up the automatic start and launches the Gateway
-nx-azure-cache uninstall   # stops the Gateway and removes the automatic start
+curl -X POST -H "Authorization: Bearer $(cat ~/.config/nx-azure-cache/local-token)" http://127.0.0.1:7484/shutdown
 ```
 
-Both commands are idempotent. After copying the binary elsewhere, rerun `install` from the new
-location: the path is updated and the Gateway restarted.
+On Windows, the token is in `%APPDATA%\nx-azure-cache\local-token`. `POST /shutdown` answers
+`401` without the Local token.
 
-- **Windows**: scheduled task `nx-azure-cache`, triggered at logon of the current user, without
-  administrator rights. It runs `conhost.exe --headless "<binary>" serve`: no window is opened.
-- **Linux**: unit `~/.config/systemd/user/nx-azure-cache.service` (`Restart=on-failure`),
-  enabled and started by `systemctl --user`. By default, it only runs during a session of the
-  user; to keep it running outside a session (CI agent, remote machine):
-
-  ```sh
-  loginctl enable-linger "$USER"
-  ```
+To remove every trace from a machine: `nx-azure-cache logout` (refresh token, keyring or file),
+then delete the config directory (`config.toml`, `local-token`) and the log directory (see
+[Config](#config) and [Troubleshooting](#troubleshooting)).
 
 ## License
 

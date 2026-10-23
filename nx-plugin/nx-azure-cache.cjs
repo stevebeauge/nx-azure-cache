@@ -7,9 +7,9 @@
 // and its `require` would make every `nx` command fail.
 //
 // Before tasks run, starts the Gateway if none is running or if it is older than this plugin
-// (ADR 0005), then sets the remote
-// cache URL if the Gateway is healthy, and sets nothing otherwise (Safe fallback). Nx ignores the hook's return value: only assignments
-// to `process.env` reach the client, daemon and isolation included.
+// (ADR 0005), then sets the remote cache URL if the Gateway is healthy, and sets nothing
+// otherwise (Safe fallback). Nx ignores the hook's return value: only assignments to
+// `process.env` reach the client, daemon and isolation included.
 'use strict';
 
 const { spawn } = require('node:child_process');
