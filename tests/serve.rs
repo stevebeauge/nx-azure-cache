@@ -5,6 +5,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const BIN: &str = env!("CARGO_BIN_EXE_nx-azure-cache");
@@ -41,12 +42,21 @@ fn temp_dir() -> PathBuf {
     dir
 }
 
+/// Port for a Gateway, below the ephemeral ranges (Linux from 32768, Windows from 49152).
+/// A port from `bind(0)` is released before the Gateway binds it: a parallel test could get
+/// it too, and its Gateway would answer in place of ours, then die with its test (#10).
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    // shortcut: 100 ports per process slot, so that two test runs on the same machine
+    // rarely meet; the bind check cannot reserve the port across processes.
+    let base = 20_000 + (std::process::id() % 100) as u16 * 100;
+    for _ in 0..1_000 {
+        let port = base + NEXT.fetch_add(1, Ordering::Relaxed);
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no free port from {base}");
 }
 
 /// `serve` command isolated in `dir` (config and logs), port from the env if given.
@@ -77,11 +87,21 @@ fn cmd(dir: &PathBuf, port: Option<u16>, command: &str) -> Command {
 
 /// Starts a Gateway and waits until it answers on `/health`.
 fn start_in(dir: PathBuf, env_port: Option<u16>, expected_port: u16) -> Gateway {
-    start_cmd(serve_cmd(&dir, env_port), expected_port)
+    let mut cmd = serve_cmd(&dir, env_port);
+    cmd.stdout(Stdio::null());
+    start_cmd(cmd, expected_port)
 }
 
-fn start_cmd(mut cmd: Command, port: u16) -> Gateway {
-    let child = cmd.stdout(Stdio::null()).spawn().unwrap();
+/// Spawns `cmd` under the guard and waits until it answers on `/health`.
+fn start_cmd(cmd: Command, port: u16) -> Gateway {
+    let mut gw = spawn(cmd, port);
+    wait_health(&mut gw);
+    gw
+}
+
+/// Spawns under the guard: a test that panics leaves no `serve` behind, holding its pipes.
+fn spawn(mut cmd: Command, port: u16) -> Gateway {
+    let child = cmd.spawn().unwrap();
     let dir = PathBuf::from(
         cmd.get_envs()
             .find(|(k, _)| *k == "APPDATA")
@@ -89,14 +109,20 @@ fn start_cmd(mut cmd: Command, port: u16) -> Gateway {
             .1
             .unwrap(),
     );
-    let gw = Gateway { child, port, dir };
-    wait_health(gw.port);
-    gw
+    Gateway { child, port, dir }
 }
 
-fn wait_health(port: u16) {
+fn wait_health(gw: &mut Gateway) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while http(port, "GET", "/health", None, b"").0 != 200 {
+    // Any error means "not yet": on Linux, the probe listener of `free_port` lives on in a
+    // child another test is forking until its exec, and can accept then reset (#10).
+    while !try_http(gw.port, "GET", "/health", None, b"").is_ok_and(|(status, _)| status == 200) {
+        // A `serve` that finds its port taken exits: the test would talk to someone else.
+        let exited = gw.child.try_wait().unwrap();
+        assert!(
+            exited.is_none(),
+            "serve exited before answering: {exited:?}"
+        );
         assert!(Instant::now() < deadline, "the Gateway does not answer");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -109,8 +135,18 @@ fn start() -> Gateway {
 
 /// Minimal HTTP/1.1 request; returns (status, body). Status 0 if the connection fails.
 fn http(port: u16, method: &str, path: &str, token: Option<&str>, body: &[u8]) -> (u16, String) {
+    try_http(port, method, path, token, body).unwrap()
+}
+
+fn try_http(
+    port: u16,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: &[u8],
+) -> std::io::Result<(u16, String)> {
     let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else {
-        return (0, String::new());
+        return Ok((0, String::new()));
     };
     let auth = token
         .map(|t| format!("Authorization: Bearer {t}\r\n"))
@@ -119,22 +155,22 @@ fn http(port: u16, method: &str, path: &str, token: Option<&str>, body: &[u8]) -
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    s.write_all(head.as_bytes()).unwrap();
-    s.write_all(body).unwrap();
+    s.write_all(head.as_bytes())?;
+    s.write_all(body)?;
     read_response(&mut s)
 }
 
-fn read_response(s: &mut TcpStream) -> (u16, String) {
-    s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+fn read_response(s: &mut TcpStream) -> std::io::Result<(u16, String)> {
+    s.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut raw = Vec::new();
-    s.read_to_end(&mut raw).unwrap();
+    s.read_to_end(&mut raw)?;
     let text = String::from_utf8_lossy(&raw).into_owned();
     let status = text.get(9..12).and_then(|c| c.parse().ok()).unwrap_or(0);
     let body = text
         .split_once("\r\n\r\n")
         .map(|(_, b)| b.to_owned())
         .unwrap_or_default();
-    (status, body)
+    Ok((status, body))
 }
 
 #[test]
@@ -191,7 +227,7 @@ fn cache_routes_only_return_404_on_get_and_403_on_put() {
         "GET /ws/v1/cache/abc HTTP/1.1\r\nHost: x\r\nAuthorization: {good}\r\nConnection: close\r\n\r\n"
     );
     s.write_all(req.as_bytes()).unwrap();
-    assert_eq!(read_response(&mut s).0, 404);
+    assert_eq!(read_response(&mut s).unwrap().0, 404);
 }
 
 #[test]
@@ -215,7 +251,7 @@ fn put_of_50_mb_answers_after_reading_the_whole_body() {
             "{err}"
         );
         s.write_all(&body[size - 1..]).unwrap();
-        assert_eq!(read_response(&mut s).0, 403);
+        assert_eq!(read_response(&mut s).unwrap().0, 403);
     }
 }
 
@@ -325,6 +361,7 @@ fn start_pipelines(oidc: &TcpListener) -> Gateway {
             "00000000-0000-0000-0000-000000000002",
         )
         .env("AZURESUBSCRIPTION_SERVICE_CONNECTION_ID", "sc")
+        .stdout(Stdio::null())
         .stderr(Stdio::null());
     start_cmd(cmd, port)
 }
@@ -478,11 +515,9 @@ fn status_reads_health_then_stats() {
 fn log_file_created_without_secrets() {
     let dir = temp_dir();
     let port = free_port();
-    let mut child = serve_cmd(&dir, Some(port))
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    wait_health(port);
+    let mut cmd = serve_cmd(&dir, Some(port));
+    cmd.stdout(Stdio::piped());
+    let mut gw = start_cmd(cmd, port);
     let token = std::fs::read_to_string(dir.join("nx-azure-cache/local-token")).unwrap();
     // Fake Entra token in JWT format, sent in a header and in the query string (signed URL).
     let entra = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJzdG9yYWdlIn0.c2lnbmF0dXJl";
@@ -493,10 +528,10 @@ fn log_file_created_without_secrets() {
         http(port, "GET", "/stats", Some(secret), b"");
         http(port, "GET", &format!("/{secret}"), Some(secret), b"");
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = gw.child.kill();
+    let _ = gw.child.wait();
     let mut stdout = String::new();
-    child
+    gw.child
         .stdout
         .take()
         .unwrap()
@@ -521,17 +556,13 @@ fn log_file_created_without_secrets() {
 fn closed_stdout_gateway_keeps_serving() {
     // Dead headless conhost, closed pipe: writing to stdout or stderr fails (EPIPE).
     let port = free_port();
-    let mut child = serve_cmd(&temp_dir(), Some(port))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    drop(child.stdout.take());
-    drop(child.stderr.take());
-    wait_health(port);
+    let mut cmd = serve_cmd(&temp_dir(), Some(port));
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut gw = spawn(cmd, port);
+    drop(gw.child.stdout.take());
+    drop(gw.child.stderr.take());
+    wait_health(&mut gw);
     for _ in 0..3 {
         assert_eq!(http(port, "GET", "/health", None, b"").0, 200);
     }
-    let _ = child.kill();
-    let _ = child.wait();
 }
