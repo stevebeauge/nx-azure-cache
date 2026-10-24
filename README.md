@@ -109,7 +109,7 @@ NX_AZURE_CACHE_ACCOUNT=<account> NX_AZURE_CACHE_CREDENTIAL=cli nx-azure-cache se
 ```sh
 nx-azure-cache login            # browser (PKCE, redirect to http://127.0.0.1:<port>)
 nx-azure-cache login --device   # no browser (SSH, container): code to enter elsewhere
-nx-azure-cache whoami           # UPN and tenant, or "not signed in"
+nx-azure-cache whoami           # UPN and tenant, or "not signed in" (exit code 1)
 nx-azure-cache logout
 ```
 

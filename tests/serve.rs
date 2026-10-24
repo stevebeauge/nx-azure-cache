@@ -480,6 +480,33 @@ fn status_without_a_running_gateway() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("Gateway stopped"));
 }
 
+/// `whoami` without an Identity: the text stays on stdout, the exit code says "no session" (#5).
+fn whoami(env: &[(&str, &str)]) -> std::process::Output {
+    let mut cmd = cmd(&temp_dir(), None, "whoami");
+    cmd.env_remove("NX_AZURE_CACHE_TENANT_ID")
+        .env_remove("NX_AZURE_CACHE_CLIENT_ID")
+        .envs(env.iter().copied());
+    cmd.output().unwrap()
+}
+
+#[test]
+fn whoami_not_configured_exits_1() {
+    let out = whoami(&[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("not signed in ("), "stdout: {stdout}");
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn whoami_without_a_stored_token_exits_1() {
+    let out = whoami(&[
+        ("NX_AZURE_CACHE_TENANT_ID", "t1"),
+        ("NX_AZURE_CACHE_CLIENT_ID", "c1"),
+    ]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "not signed in\n");
+    assert_eq!(out.status.code(), Some(1));
+}
+
 #[test]
 fn status_reads_health_then_stats() {
     let gw = start();
