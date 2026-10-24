@@ -278,15 +278,32 @@ fn local_token_created_then_kept() {
 fn shutdown_without_the_token_is_refused() {
     let mut gw = start();
     assert_eq!(http(gw.port, "POST", "/shutdown", None, b"").0, 401);
-    assert_eq!(http(gw.port, "POST", "/shutdown", Some("0".repeat(64).as_str()), b"").0, 401);
-    assert_eq!(gw.child.try_wait().unwrap(), None, "stopped without the token");
+    assert_eq!(
+        http(
+            gw.port,
+            "POST",
+            "/shutdown",
+            Some("0".repeat(64).as_str()),
+            b""
+        )
+        .0,
+        401
+    );
+    assert_eq!(
+        gw.child.try_wait().unwrap(),
+        None,
+        "stopped without the token"
+    );
 }
 
 #[test]
 fn shutdown_with_the_token_exits_0_and_frees_the_port() {
     let mut gw = start();
     let token = gw.token();
-    assert_eq!(http(gw.port, "POST", "/shutdown", Some(token.trim()), b"").0, 200);
+    assert_eq!(
+        http(gw.port, "POST", "/shutdown", Some(token.trim()), b"").0,
+        200
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
         if let Some(status) = gw.child.try_wait().unwrap() {
@@ -296,7 +313,10 @@ fn shutdown_with_the_token_exits_0_and_frees_the_port() {
         std::thread::sleep(Duration::from_millis(50));
     };
     assert_eq!(status.code(), Some(0));
-    assert!(TcpListener::bind(("127.0.0.1", gw.port)).is_ok(), "port still held");
+    assert!(
+        TcpListener::bind(("127.0.0.1", gw.port)).is_ok(),
+        "port still held"
+    );
 }
 
 #[test]

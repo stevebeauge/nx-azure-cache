@@ -14,7 +14,8 @@ mod token;
 mod token_store;
 mod user;
 
-const USAGE: &str = "usage: nx-azure-cache <serve|status [--json]|login [--device]|logout|whoami|version>";
+const USAGE: &str =
+    "usage: nx-azure-cache <serve|status [--json]|login [--device]|logout|whoami|version>";
 
 #[tokio::main]
 async fn main() {
