@@ -440,7 +440,7 @@ impl TokenCredential for UserCredential {
 /// `login [--device]`, `logout`, `whoami`: process exit code.
 pub async fn command(name: &str, args: &[String]) -> i32 {
     match run(name, args).await {
-        Ok(()) => 0,
+        Ok(code) => code,
         Err(e) => {
             eprintln!("nx-azure-cache: {e}");
             1
@@ -448,7 +448,8 @@ pub async fn command(name: &str, args: &[String]) -> i32 {
     }
 }
 
-async fn run(name: &str, args: &[String]) -> Result<(), String> {
+/// `Ok(1)`: no Identity, message already printed on stdout.
+async fn run(name: &str, args: &[String]) -> Result<i32, String> {
     let dir = crate::config::config_dir()?;
     let config = Config::load(&dir)?;
     match name {
@@ -479,20 +480,20 @@ async fn run(name: &str, args: &[String]) -> Result<(), String> {
                 Ok(auth) => auth,
                 Err(e) => {
                     println!("not signed in ({e})");
-                    return Ok(());
+                    return Ok(1);
                 }
             };
             if !auth.stored().await? {
                 println!("not signed in");
-                return Ok(());
+                return Ok(1);
             }
             let id = auth.refresh().await?.identity;
             println!("{}\ntenant {}", id.upn, id.tenant);
-            return Ok(());
+            return Ok(0);
         }
     }
     println!("{}", notify_gateway(&config, &dir).await);
-    Ok(())
+    Ok(0)
 }
 
 /// Tells an already running Gateway to reload its Identity.
