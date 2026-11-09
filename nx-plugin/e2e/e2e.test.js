@@ -55,6 +55,8 @@ function nx(args, daemon, extra = {}) {
   for (const k of Object.keys(env)) {
     if (k.startsWith('NX_SELF_HOSTED_') || k.startsWith('NX_AZURE_CACHE_')) delete env[k];
   }
+  // A developer machine: with `CI` set (GitHub Actions), the plugin would start no Gateway.
+  delete env.CI;
   Object.assign(env, extra, { NX_AZURE_CACHE_PORT: String(port), APPDATA: configDir, XDG_CONFIG_HOME: configDir });
   const child = spawn(process.execPath, [NX, ...args], { cwd: ROOT, env });
   let out = '';
