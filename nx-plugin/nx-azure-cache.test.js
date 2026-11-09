@@ -7,12 +7,13 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { preTasksExecution } = require('./nx-azure-cache.cjs');
+const { preTasksExecution } = require('../npm/nx-azure-cache/index.cjs');
+const { version: VERSION } = require('../npm/nx-azure-cache/package.json');
 
 const SERVER = 'NX_SELF_HOSTED_REMOTE_CACHE_SERVER';
 const TOKEN = 'NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN';
 const TOKEN_VALUE = 'ab'.repeat(32);
-const HEALTHY = { service: 'nx-azure-cache', version: '0.1.0', identity: { ready: true, kind: 'user' }, write: 'unknown' };
+const HEALTHY = { service: 'nx-azure-cache', version: VERSION, identity: { ready: true, kind: 'user' }, write: 'unknown' };
 
 // The real Gateway, for the start cases (`pnpm test:plugin` builds it first).
 const BIN = path.join(__dirname, '..', 'target', 'debug', process.platform === 'win32' ? 'nx-azure-cache.exe' : 'nx-azure-cache');
@@ -126,7 +127,7 @@ test('no Gateway: starts it, with the nx.json settings', async () => {
   await preTasksExecution({ workspace: 'd', account: 'acc' });
   // The account came through: the Gateway now lacks an Identity, not an account.
   off(/no Identity available/);
-  assert.equal((await health(started)).version, '0.1.0');
+  assert.equal((await health(started)).version, VERSION);
 });
 
 test('no Gateway, start fails: Safe fallback once the wait runs out', async () => {
@@ -154,12 +155,12 @@ test('older Gateway: stopped with the token, then replaced', async () => {
   process.env.NX_AZURE_CACHE_BIN = BIN;
   await preTasksExecution({ workspace: 'd' });
   assert.equal(auth, `Bearer ${TOKEN_VALUE}`);
-  assert.match(lines[0], /replacing Gateway 0\.0\.9 with 0\.1\.0/);
-  assert.equal((await health(port)).version, '0.1.0');
+  assert.equal(lines[0], `[nx-azure-cache] replacing Gateway 0.0.9 with ${VERSION}`);
+  assert.equal((await health(port)).version, VERSION);
 });
 
 test('newer, equal or unreadable version: used as is', async () => {
-  for (const version of ['0.2.0', '0.1.0', '1.0', undefined]) {
+  for (const version of ['999.0.0', VERSION, '1.0', undefined]) {
     let posted = false;
     await gateway((req, res) => {
       if (req.method === 'POST') posted = true;

@@ -1,4 +1,4 @@
 {
   "cacheDirectory": ".nx/cache",
-  "plugins": [{ "plugin": "./tools/nx-azure-cache.cjs", "options": { "workspace": "e2e" } }]
+  "plugins": [{ "plugin": "nx-azure-cache", "options": { "workspace": "e2e" } }]
 }

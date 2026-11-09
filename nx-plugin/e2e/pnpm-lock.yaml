@@ -11,6 +11,9 @@ importers:
       nx:
         specifier: 23.2.1
         version: 23.2.1
+      nx-azure-cache:
+        specifier: link:../../npm/nx-azure-cache
+        version: link:../../npm/nx-azure-cache
 
 packages:
 

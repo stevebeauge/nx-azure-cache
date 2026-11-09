@@ -1,0 +1,30 @@
+{
+  "name": "nx-azure-cache",
+  "version": "0.1.0",
+  "description": "Nx remote cache stored in Azure Blob Storage, served by a local gateway",
+  "keywords": [
+    "nx",
+    "nx-plugin",
+    "remote-cache",
+    "azure",
+    "blob-storage"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stevebeauge/nx-azure-cache.git",
+    "directory": "npm/nx-azure-cache"
+  },
+  "main": "index.cjs",
+  "bin": {
+    "nx-azure-cache": "bin.cjs"
+  },
+  "files": [
+    "index.cjs",
+    "bin.cjs"
+  ],
+  "optionalDependencies": {
+    "@nx-azure-cache/linux-x64": "0.1.0",
+    "@nx-azure-cache/win32-x64": "0.1.0"
+  }
+}

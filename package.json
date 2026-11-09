@@ -8,6 +8,7 @@
     "build": "cargo build --release",
     "test": "cargo test",
     "build:linux": "node scripts/build-linux.js",
-    "test:plugin": "cargo build && node --test nx-plugin/nx-azure-cache.test.js && pnpm --dir nx-plugin/e2e install && node --test nx-plugin/e2e/e2e.test.js"
+    "version:set": "node scripts/version.js",
+    "test:plugin": "cargo build && node --test nx-plugin/nx-azure-cache.test.js nx-plugin/bin.test.js scripts/version.test.js && pnpm --dir nx-plugin/e2e install && node --test nx-plugin/e2e/e2e.test.js"
   }
 }

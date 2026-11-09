@@ -55,6 +55,8 @@ function nx(args, daemon, extra = {}) {
   for (const k of Object.keys(env)) {
     if (k.startsWith('NX_SELF_HOSTED_') || k.startsWith('NX_AZURE_CACHE_')) delete env[k];
   }
+  // A developer machine: with `CI` set (GitHub Actions), the plugin would start no Gateway.
+  delete env.CI;
   Object.assign(env, extra, { NX_AZURE_CACHE_PORT: String(port), APPDATA: configDir, XDG_CONFIG_HOME: configDir });
   const child = spawn(process.execPath, [NX, ...args], { cwd: ROOT, env });
   let out = '';
@@ -69,9 +71,6 @@ const reset = () => nx(['reset'], false);
 const build = (daemon, sel = '', extra = {}) => nx(['run', 'proj:build'], daemon, { E2E_SEL: sel, ...extra });
 
 before(async () => {
-  // As in a real Workspace: the plugin is copied under `tools/`.
-  fs.mkdirSync(path.join(ROOT, 'tools'), { recursive: true });
-  fs.copyFileSync(path.join(ROOT, '..', 'nx-azure-cache.cjs'), path.join(ROOT, 'tools', 'nx-azure-cache.cjs'));
   configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nx-azure-cache-e2e-'));
   fs.mkdirSync(path.join(configDir, 'nx-azure-cache'));
   fs.writeFileSync(path.join(configDir, 'nx-azure-cache', 'local-token'), TOKEN_VALUE);

@@ -1,0 +1,20 @@
+{
+  "name": "@nx-azure-cache/linux-x64",
+  "version": "0.1.0",
+  "description": "Linux x64 Gateway binary of nx-azure-cache (static musl)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stevebeauge/nx-azure-cache.git",
+    "directory": "npm/linux-x64"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "nx-azure-cache"
+  ]
+}

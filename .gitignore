@@ -1,3 +1,7 @@
 /target
 /dist
 /node_modules
+/npm/win32-x64/nx-azure-cache.exe
+/npm/linux-x64/nx-azure-cache
+/npm/*/LICENSE
+/npm/nx-azure-cache/README.md
