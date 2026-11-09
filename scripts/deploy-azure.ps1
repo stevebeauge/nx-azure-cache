@@ -7,8 +7,10 @@ Prerequisite: `az login --tenant <tenant>` with an account that can create resou
 assignments in the subscription, create app registrations and grant admin consent
 (Cloud Application Administrator or higher).
 
-The only step outside the script: the Azure DevOps service connection (see docs/runbook-azure.md).
-Once it exists, rerun the script with -CiIssuer and -CiSubject to add the federated credential.
+The only steps outside the script: on the CI side, the Azure DevOps service connection or the
+GitHub Actions workflow (see docs/runbook-azure.md). Then rerun the script with -CiIssuer and
+-CiSubject, one value per federated credential, paired by position. Credentials are only added,
+never deleted.
 
 Example:
   ./scripts/deploy-azure.ps1 -Subscription 00000000-0000-0000-0000-000000000000 `
@@ -23,11 +25,16 @@ param(
   [string]$Container = "nx-cache",
   [string]$DevAppName = "nx-azure-cache",
   [string]$CiAppName = "nx-azure-cache-ci",
-  [string]$CiIssuer,
-  [string]$CiSubject
+  [string[]]$CiIssuer,  # federated credentials of the CI app: issuer and subject, paired by position
+  [string[]]$CiSubject
 )
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true  # a failing az stops the script
+
+# Checked before any change in Azure.
+if ($CiIssuer.Count -ne $CiSubject.Count) {
+  throw "-CiIssuer and -CiSubject must have the same number of values ($($CiIssuer.Count) and $($CiSubject.Count))."
+}
 
 $StorageApi = "e406a681-f3d4-42a8-90b6-c2b029497af1"  # Azure Storage
 $GraphApi = "00000003-0000-0000-c000-000000000000"    # Microsoft Graph
@@ -41,6 +48,14 @@ function Get-ServicePrincipalId($appId) {
 }
 function Get-ScopeId($api, $value) {
   az ad sp show --id $api --query "oauth2PermissionScopes[?value=='$value'].id" -o tsv
+}
+# Stable name for an issuer + subject pair: the readable part of the subject, then a hash of the
+# pair, so that two pairs never share a name. Entra: at most 120 characters, URL friendly.
+function Get-CredentialName($issuer, $subject) {
+  $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+      [Text.Encoding]::UTF8.GetBytes("$issuer`n$subject"))).Substring(0, 12).ToLower()
+  $readable = ($subject -replace '[^A-Za-z0-9]+', '-').Trim('-')
+  "$($readable.Substring(0, [Math]::Min($readable.Length, 100)).TrimEnd('-'))-$hash".TrimStart('-')
 }
 function Write-JsonFile($object) {
   $file = New-TemporaryFile
@@ -93,16 +108,19 @@ az ad app permission grant --id $devAppId --api $GraphApi --scope openid profile
 az ad app create --display-name $CiAppName --sign-in-audience AzureADMyOrg --output none
 $ciAppId = Get-AppId $CiAppName
 $ciPrincipalId = Get-ServicePrincipalId $ciAppId
-if ($CiIssuer -and $CiSubject) {
-  $existing = az ad app federated-credential list --id $ciAppId `
-    --query "[?subject=='$CiSubject'].id" -o tsv
-  if (-not $existing) {
+if ($CiIssuer) {
+  # Read once: a credential matching an issuer + subject pair is left as is, whatever its name.
+  $existing = @(az ad app federated-credential list --id $ciAppId -o json | ConvertFrom-Json)
+  for ($i = 0; $i -lt $CiIssuer.Count; $i++) {
+    $issuer = $CiIssuer[$i]; $subject = $CiSubject[$i]
+    if ($existing | Where-Object { $_.issuer -eq $issuer -and $_.subject -eq $subject }) { continue }
     $credential = Write-JsonFile @{
-      name = "azure-devops"; issuer = $CiIssuer; subject = $CiSubject
+      name = Get-CredentialName $issuer $subject; issuer = $issuer; subject = $subject
       audiences = @("api://AzureADTokenExchange")
     }
     az ad app federated-credential create --id $ciAppId --parameters "@$credential" --output none
     Remove-Item $credential
+    $existing += [pscustomobject]@{ issuer = $issuer; subject = $subject }  # a pair given twice
   }
 }
 
@@ -121,4 +139,4 @@ Grant "Reader" $ciPrincipalId ServicePrincipal $rgId
 
 ""
 "Developer client_id (config.toml): $devAppId"
-"CI client id (Azure DevOps): $ciAppId"
+"CI client id (Azure DevOps service connection, GitHub Actions AZURE_CLIENT_ID): $ciAppId"
