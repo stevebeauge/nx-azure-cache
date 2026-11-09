@@ -6,10 +6,16 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
 };
-use azure_core::{credentials::TokenCredential, time::OffsetDateTime};
+use azure_core::{
+    credentials::{Secret, TokenCredential},
+    error::ErrorKind,
+    http::{ClientMethodOptions, Url},
+    time::OffsetDateTime,
+};
 use azure_identity::{
-    AzureCliCredential, AzurePipelinesCredential, ManagedIdentityCredential,
-    ManagedIdentityCredentialOptions, UserAssignedId, WorkloadIdentityCredential,
+    AzureCliCredential, AzurePipelinesCredential, ClientAssertion, ClientAssertionCredential,
+    ManagedIdentityCredential, ManagedIdentityCredentialOptions, UserAssignedId,
+    WorkloadIdentityCredential,
 };
 use serde::Serialize;
 use std::{sync::Arc, time::Duration};
@@ -46,7 +52,7 @@ impl Status {
 }
 
 /// Credential to use. `auto` picks a single one, with no chain at runtime: `pipelines`,
-/// then `workload`, then `user` if a refresh token is stored (`user_stored`).
+/// then `github`, then `workload`, then `user` if a refresh token is stored (`user_stored`).
 /// `managed` and `cli` are never picked by `auto` (no slow IMDS probe outside Azure).
 /// `Ok(None)`: no Identity.
 pub fn select(
@@ -57,17 +63,20 @@ pub fn select(
     let set = |k: &str| env(k).is_some_and(|v| !v.is_empty());
     Ok(Some(match credential {
         "auto" if set("SYSTEM_OIDCREQUESTURI") => "pipelines",
+        "auto" if set("ACTIONS_ID_TOKEN_REQUEST_URL") => "github",
         "auto" if set("AZURE_FEDERATED_TOKEN_FILE") => "workload",
         "auto" if user_stored => "user",
         "auto" => return Ok(None),
         "user" => "user",
         "pipelines" => "pipelines",
+        "github" => "github",
         "workload" => "workload",
         "managed" => "managed",
         "cli" => "cli",
         other => {
             return Err(format!(
-                "unknown credential: {other:?} (auto, user, pipelines, workload, managed or cli)"
+                "unknown credential: {other:?} (auto, user, pipelines, github, workload, managed \
+                 or cli)"
             ));
         }
     }))
@@ -106,6 +115,38 @@ pub fn build(kind: &str, config: &Config, env: Env) -> Result<Built, String> {
             AzurePipelinesCredential::new(tenant, client, &connection, access_token, None)
                 .map_err(sdk)?
         }
+        "github" => {
+            let var = |k: &str| env(k).filter(|v| !v.is_empty());
+            let (Some(url), Some(request_token)) = (
+                var("ACTIONS_ID_TOKEN_REQUEST_URL"),
+                var("ACTIONS_ID_TOKEN_REQUEST_TOKEN"),
+            ) else {
+                return Err(
+                    "ACTIONS_ID_TOKEN_REQUEST_URL or ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+                            missing: add `permissions: id-token: write` to the job"
+                        .into(),
+                );
+            };
+            let ids = ["AZURE_CLIENT_ID", "AZURE_TENANT_ID"].map(|k| var(k).ok_or(k));
+            let [Ok(client), Ok(tenant)] = ids.clone() else {
+                let missing: Vec<_> = ids.iter().filter_map(|r| r.clone().err()).collect();
+                return Err(format!(
+                    "{} missing: set them in the job's `env:` to the identity holding the \
+                     federated credential",
+                    missing.join(", ")
+                ));
+            };
+            let mut url =
+                Url::parse(&url).map_err(|e| format!("ACTIONS_ID_TOKEN_REQUEST_URL: {e}"))?;
+            url.query_pairs_mut()
+                .append_pair("audience", "api://AzureADTokenExchange");
+            let oidc = GithubOidc {
+                url,
+                request_token: Secret::new(request_token),
+                http: reqwest::Client::new(),
+            };
+            ClientAssertionCredential::new(tenant, client, oidc, None).map_err(sdk)?
+        }
         "workload" => WorkloadIdentityCredential::new(None).map_err(sdk)?,
         "managed" => ManagedIdentityCredential::new(Some(ManagedIdentityCredentialOptions {
             user_assigned_id: config
@@ -123,6 +164,42 @@ pub fn build(kind: &str, config: &Config, env: Env) -> Result<Built, String> {
         other => return Err(format!("unknown credential: {other:?}")),
     };
     Ok((cred, None))
+}
+
+/// GitHub Actions OIDC token, used as the client assertion. The SDK asks for one on every
+/// token renewal, so a long job never presents an expired assertion.
+#[derive(Debug)]
+struct GithubOidc {
+    url: Url,
+    request_token: Secret,
+    http: reqwest::Client,
+}
+
+#[async_trait::async_trait]
+impl ClientAssertion for GithubOidc {
+    async fn secret(&self, _: Option<ClientMethodOptions<'_>>) -> azure_core::Result<String> {
+        let fail = |m: String| azure_core::Error::with_message(ErrorKind::Credential, m);
+        let net = |e: reqwest::Error| fail(format!("cannot reach the GitHub OIDC endpoint: {e}"));
+        let resp = self
+            .http
+            .get(self.url.clone())
+            .bearer_auth(self.request_token.secret())
+            .send()
+            .await
+            .map_err(net)?;
+        let status = resp.status().as_u16();
+        if status != 200 {
+            return Err(fail(format!("HTTP {status} from the GitHub OIDC endpoint")));
+        }
+        #[derive(serde::Deserialize)]
+        struct Oidc {
+            value: String,
+        }
+        let body = resp.text().await.map_err(net)?;
+        let oidc: Oidc = serde_json::from_str(&body)
+            .map_err(|_| fail("unreadable answer from the GitHub OIDC endpoint".into()))?;
+        Ok(oidc.value)
+    }
 }
 
 /// (Re)builds the configured Identity: credential, Blob client, renewal task, and resets the
@@ -147,7 +224,7 @@ pub async fn start(state: &Arc<AppState>, env: Env<'_>) {
             Ok(None) => Err(Status::down(
                 None,
                 "no Identity available: no SYSTEM_OIDCREQUESTURI, no \
-                 AZURE_FEDERATED_TOKEN_FILE, no `nx-azure-cache login`; or set \
+                 ACTIONS_ID_TOKEN_REQUEST_URL, no AZURE_FEDERATED_TOKEN_FILE, no `nx-azure-cache login`; or set \
                  `credential` in the config",
             )),
             Ok(Some(kind)) => build(kind, config, env)
@@ -251,6 +328,13 @@ fn explain(kind: &str, config: &Config, error: &str) -> String {
             "client id or tenant of another identity: they must designate the one holding \
              the federated credential (app registration or UAMI)",
         )
+    } else if error.contains("AADSTS70021") {
+        // Also matches AADSTS700213.
+        Some(
+            "no federated credential on the identity matches the token's issuer and subject \
+             (GitHub: repo:<owner>/<repo>:ref:refs/heads/<branch>, :pull_request or \
+             :environment:<name>)",
+        )
     } else if kind == "pipelines" && error.contains("401 response from the OIDC endpoint") {
         Some("SYSTEM_ACCESSTOKEN rejected: is it mapped to $(System.AccessToken)?")
     } else if kind == "managed"
@@ -282,6 +366,7 @@ mod tests {
     #[test]
     fn auto_on_every_combination() {
         let (oidc, fed) = ("SYSTEM_OIDCREQUESTURI", "AZURE_FEDERATED_TOKEN_FILE");
+        let gh = "ACTIONS_ID_TOKEN_REQUEST_URL";
         let cases: &[(&[&str], bool, Option<&str>)] = &[
             (&[], false, None),
             (&[], true, Some("user")),
@@ -291,6 +376,11 @@ mod tests {
             (&[oidc], true, Some("pipelines")),
             (&[oidc, fed], false, Some("pipelines")),
             (&[oidc, fed], true, Some("pipelines")),
+            (&[gh], false, Some("github")),
+            (&[gh], true, Some("github")),
+            (&[gh, fed], false, Some("github")),
+            (&[oidc, gh], false, Some("pipelines")),
+            (&[oidc, gh, fed], true, Some("pipelines")),
         ];
         for (vars, user, expected) in cases {
             assert_eq!(
@@ -344,6 +434,94 @@ mod tests {
             explain("managed", &with_id, imds),
             format!("managed: {imds}")
         );
+    }
+
+    #[test]
+    fn github_pitfalls_and_messages() {
+        let config = Config::default();
+        let ids = ["AZURE_CLIENT_ID", "AZURE_TENANT_ID"];
+        // Explicit `credential = github` in a job without `permissions: id-token: write`.
+        let Err(e) = build("github", &config, &env_of(&ids)) else {
+            panic!("built without the OIDC endpoint")
+        };
+        assert!(e.contains("ACTIONS_ID_TOKEN_REQUEST_URL"), "{e}");
+        assert!(e.contains("id-token: write"), "{e}");
+        let oidc = [
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        ];
+        let Err(e) = build("github", &config, &env_of(&oidc)) else {
+            panic!("built without client and tenant")
+        };
+        assert!(
+            e.contains("AZURE_CLIENT_ID, AZURE_TENANT_ID missing"),
+            "{e}"
+        );
+        let tenant = "00000000-0000-0000-0000-000000000001";
+        let full = |k: &str| match k {
+            "AZURE_TENANT_ID" => Some(tenant.to_owned()),
+            "ACTIONS_ID_TOKEN_REQUEST_URL" => Some("http://127.0.0.1:1/oidc?api-version=1".into()),
+            _ => Some("x".to_owned()),
+        };
+        assert!(build("github", &config, &full).is_ok());
+
+        // Both codes Entra returns when no federated credential matches the job's subject.
+        for code in ["AADSTS700213", "AADSTS70021"] {
+            let entra = format!("{code}: No matching federated identity record found");
+            let m = explain("github", &config, &entra);
+            assert!(m.starts_with("github: no federated credential"), "{m}");
+            assert!(m.contains("repo:<owner>/<repo>"), "{m}");
+        }
+    }
+
+    /// Fake GitHub OIDC endpoint: answers `status` with a token numbered by call, and records
+    /// each request's query and `Authorization` header.
+    async fn fake_github_oidc(status: u16) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use axum::{extract::RawQuery, routing::get};
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let handler = move |RawQuery(q): RawQuery, headers: HeaderMap| async move {
+            let auth = headers["authorization"].to_str().unwrap().to_owned();
+            let mut log = log.lock().unwrap();
+            log.push(format!("{} | {auth}", q.unwrap_or_default()));
+            let body = format!(r#"{{"value":"jwt-{}"}}"#, log.len());
+            (StatusCode::from_u16(status).unwrap(), body)
+        };
+        let app = axum::Router::new().route("/token", get(handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        (format!("http://{addr}/token?api-version=2.0"), seen)
+    }
+
+    fn github_oidc(url: &str) -> GithubOidc {
+        let mut url = Url::parse(url).unwrap();
+        url.query_pairs_mut()
+            .append_pair("audience", "api://AzureADTokenExchange");
+        GithubOidc {
+            url,
+            request_token: Secret::new("request-token"),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn github_oidc_token_requested_anew_on_every_call() {
+        let (url, seen) = fake_github_oidc(200).await;
+        let oidc = github_oidc(&url);
+        assert_eq!(oidc.secret(None).await.unwrap(), "jwt-1");
+        assert_eq!(oidc.secret(None).await.unwrap(), "jwt-2");
+        let expected = "api-version=2.0&audience=api%3A%2F%2FAzureADTokenExchange \
+                        | Bearer request-token";
+        assert_eq!(*seen.lock().unwrap(), [expected, expected]);
+
+        let (url, _) = fake_github_oidc(403).await;
+        let e = github_oidc(&url)
+            .secret(None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, "HTTP 403 from the GitHub OIDC endpoint");
     }
 
     #[tokio::test]

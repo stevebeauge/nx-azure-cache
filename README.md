@@ -74,6 +74,7 @@ whose behalf it accesses the Blob (scope `https://storage.azure.com/.default`):
 | `credential` | Flow | Inputs |
 |---|---|---|
 | `pipelines` | Azure Pipelines service connection OIDC | `SYSTEM_OIDCREQUESTURI`, `SYSTEM_ACCESSTOKEN`, `AZURESUBSCRIPTION_TENANT_ID`, `AZURESUBSCRIPTION_CLIENT_ID`, `AZURESUBSCRIPTION_SERVICE_CONNECTION_ID` |
+| `github` | GitHub Actions OIDC, see [GitHub Actions](#github-actions) | `ACTIONS_ID_TOKEN_REQUEST_URL`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` (job with `permissions: id-token: write`), `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` |
 | `workload` | federated token in a file | `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` |
 | `managed` | IMDS | `managed_client_id` if the machine carries several managed identities |
 | `cli` | `az account get-access-token` | an active `az login`; never in CI |
@@ -81,22 +82,53 @@ whose behalf it accesses the Blob (scope `https://storage.azure.com/.default`):
 | `auto` (default) | a single one of the Identities above, chosen at startup | see below |
 
 `auto` chooses deterministically, without trying several Identities one after the other:
-`pipelines` if `SYSTEM_OIDCREQUESTURI` is set, otherwise `workload` if
+`pipelines` if `SYSTEM_OIDCREQUESTURI` is set, otherwise `github` if
+`ACTIONS_ID_TOKEN_REQUEST_URL` is, otherwise `workload` if
 `AZURE_FEDERATED_TOKEN_FILE` is, otherwise `user` if a `login` stored a refresh token, otherwise
 none. `managed` and `cli` are never chosen by `auto` (an IMDS probe is slow outside Azure): they
 must be requested.
 
 - **Token**: obtained at startup, cached, renewed 4 min before it expires. A failure is retried
-  every 30 s; an acquisition without an answer is abandoned after 60 s. With `pipelines`, each
-  renewal requests a new `oidcToken` (it only lives ~10 min).
+  every 30 s; an acquisition without an answer is abandoned after 60 s. With `pipelines` and
+  `github`, each renewal requests a new OIDC token (it only lives a few minutes).
 - **`/health.identity`**: `{"ready": bool, "kind": "pipelines"|…|null, "reason": "…"}`, read
   without any network call. While `ready` is false, the Activation plugin does not set the URL
   and prints the reason; it is also written to the log.
 - **Pitfalls reported in the reason**: `SYSTEM_ACCESSTOKEN` missing or rejected (map it with
   `SYSTEM_ACCESSTOKEN: $(System.AccessToken)` in the step's `env:`); `AZURESUBSCRIPTION_*`
   missing (start `serve` from an `AzureCLI@2` step); AADSTS700016 or AADSTS900023 (client id or
-  tenant of another identity than the one holding the federated credential); IMDS rejecting the
-  identity without `managed_client_id` (several user-assigned managed identities).
+  tenant of another identity than the one holding the federated credential); AADSTS700213 or
+  AADSTS70021 (no federated credential matches the token's issuer and subject);
+  `ACTIONS_ID_TOKEN_REQUEST_URL` missing with `credential = github` (job without
+  `permissions: id-token: write`); IMDS rejecting the identity without `managed_client_id`
+  (several user-assigned managed identities).
+
+#### GitHub Actions
+
+The `github` Identity needs no secret. The job asks GitHub for an OIDC token and exchanges it
+with Entra for a Blob token:
+
+- the job (or workflow) grants `permissions: id-token: write`, which makes GitHub set
+  `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`;
+- the step that starts `serve` sets `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` to the writer
+  identity (app registration or user-assigned managed identity), as `azure/login` users already do;
+- that identity carries a federated credential with issuer
+  `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`, and a
+  subject matching the job: `repo:<owner>/<repo>:ref:refs/heads/<branch>`,
+  `repo:<owner>/<repo>:pull_request` or `repo:<owner>/<repo>:environment:<name>`.
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      NX_AZURE_CACHE_ACCOUNT: <account>
+```
 
 Local try with `az login`:
 

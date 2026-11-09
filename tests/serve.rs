@@ -78,6 +78,7 @@ fn cmd(dir: &PathBuf, port: Option<u16>, command: &str) -> Command {
         .env("NX_AZURE_CACHE_TOKEN_STORE", "file")
         // On a CI agent, `auto` would pick the agent's Identity.
         .env_remove("SYSTEM_OIDCREQUESTURI")
+        .env_remove("ACTIONS_ID_TOKEN_REQUEST_URL")
         .env_remove("AZURE_FEDERATED_TOKEN_FILE");
     if let Some(port) = port {
         cmd.env("NX_AZURE_CACHE_PORT", port.to_string());
@@ -448,6 +449,52 @@ fn rejected_system_accesstoken_gives_a_readable_reason() {
         "{reason}"
     );
     assert!(!reason.contains("build-token"), "{reason}");
+}
+
+#[test]
+fn github_job_refused_by_the_oidc_endpoint_gives_a_readable_reason() {
+    // GitHub OIDC endpoint answering 403.
+    let oidc = TcpListener::bind("127.0.0.1:0").unwrap();
+    let oidc_port = oidc.local_addr().unwrap().port();
+    let port = free_port();
+    let mut cmd = serve_cmd(&temp_dir(), Some(port));
+    cmd.env("NX_AZURE_CACHE_ACCOUNT", "mystorageaccount")
+        .env(
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            format!("http://127.0.0.1:{oidc_port}/token?api-version=2.0"),
+        )
+        .env("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "request-token")
+        .env("AZURE_TENANT_ID", "00000000-0000-0000-0000-000000000001")
+        .env("AZURE_CLIENT_ID", "00000000-0000-0000-0000-000000000002")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let gw = start_cmd(cmd, port);
+    std::thread::spawn(move || {
+        for mut s in oidc.incoming().flatten() {
+            let _ = s.read(&mut [0u8; 4096]);
+            let _ = s.write_all(
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let id = loop {
+        let id = identity(gw.port);
+        if id["reason"] != "acquiring token" {
+            break id;
+        }
+        assert!(Instant::now() < deadline, "{id}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // `auto` picked `github` from ACTIONS_ID_TOKEN_REQUEST_URL.
+    assert_eq!(id["ready"], false);
+    assert_eq!(id["kind"], "github");
+    let reason = id["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("HTTP 403 from the GitHub OIDC endpoint"),
+        "{reason}"
+    );
+    assert!(!reason.contains("request-token"), "{reason}");
 }
 
 #[test]
