@@ -157,22 +157,28 @@ container of the `account` storage account. Nx only ever gets `200`, `404`, `403
 
 ## Enable the cache in a Workspace
 
-The Activation plugin (`nx-plugin/nx-azure-cache.cjs`) connects Nx to the machine's Gateway. It
-is a dependency-free JS file, copied into each Workspace. It runs on Nx 22.4.1 as well as 23.2.1
-(e2e tests), but Nx 23.0.2 is the recommended minimum: earlier versions have a zip-slip flaw when
-extracting Entries.
+The public npm package `nx-azure-cache` carries the Activation plugin, which connects Nx to the
+machine's Gateway, and an `nx-azure-cache` command. The Gateway binary comes from a Platform
+package, `@nx-azure-cache/win32-x64` or `@nx-azure-cache/linux-x64` (static musl), installed as
+an optional dependency only on its platform, without any install script. Other platforms (macOS,
+arm64) get no binary: the plugin sets nothing and says so. No authentication is needed to
+install. The plugin runs on Nx 22.4.1 as well as 23.2.1 (e2e tests), but Nx 23.0.2 is the
+recommended minimum: earlier versions have a zip-slip flaw when extracting Entries.
 
-1. Copy `nx-plugin/nx-azure-cache.cjs` into the Workspace's `tools/` and commit it, keeping the
-   `.cjs` extension: renamed to `.js` in a `"type": "module"` Workspace, it would make every
-   `nx` command fail. The version is in the file header.
-2. Declare it in `nx.json`, with the Workspace identifier (`^[a-z0-9][a-z0-9-]{0,62}$`) and
-   the settings of the Gateway it starts:
+1. Add the package to the Workspace's dev dependencies (npm, pnpm and Bun work as is):
+
+   ```sh
+   pnpm add -D nx-azure-cache
+   ```
+
+2. Declare the plugin in `nx.json` by its package name, with the Workspace identifier
+   (`^[a-z0-9][a-z0-9-]{0,62}$`) and the settings of the Gateway it starts:
 
    ```json
    {
      "plugins": [
        {
-         "plugin": "./tools/nx-azure-cache.cjs",
+         "plugin": "nx-azure-cache",
          "options": {
            "workspace": "my-workspace",
            "account": "mystorageaccount",
@@ -193,8 +199,8 @@ Before each run, the plugin queries `http://127.0.0.1:<port>/health` (200 ms at 
   Identity is not ready by then, it goes on without the remote cache.
 - **Gateway older than the plugin**: it asks it to stop (`POST /shutdown`, Local token), then
   starts its own. A newer or equal Gateway is used as is.
-- **Binary**: `NX_AZURE_CACHE_BIN`, otherwise the platform package
-  `nx-azure-cache-<platform>-<arch>` resolved next to the plugin (not published yet).
+- **Binary**: `NX_AZURE_CACHE_BIN`, otherwise the Platform package
+  `@nx-azure-cache/<platform>-<arch>` resolved next to the plugin.
 - **CI** (`CI` set): it starts nothing; the CI templates start the Gateway.
 - A Gateway started by another Workspace keeps that Workspace's settings: one storage account
   per machine is assumed.
@@ -214,7 +220,14 @@ Local token). Otherwise it sets nothing, prints a line `[nx-azure-cache] remote 
   remote hit, also clear that cache (or set `"cacheDirectory": ".nx/cache"`), then `nx reset`
   (`--only-cache` is not enough: Nx's database still reports the hit).
 
-Plugin tests (unit, then e2e on an Nx 23.2.1 workspace with and without the daemon):
+The package's command runs the Gateway binary from the Workspace, for example
+`pnpm exec nx-azure-cache login`, `status` or `version`. It reads `account`, `tenantId` and
+`clientId` from the `nx-azure-cache` entry of the nearest `nx.json` and passes them as the same
+`NX_AZURE_CACHE_*` variables; variables already set win. Without a readable `nx.json`, the binary
+runs with the environment unchanged. Arguments, output and exit code pass through.
+
+Plugin tests (unit, command, version script, then e2e on an Nx 23.2.1 workspace that declares
+the plugin by its package name, with and without the daemon):
 
 ```sh
 pnpm test:plugin
@@ -269,6 +282,28 @@ On Windows, the token is in `%APPDATA%\nx-azure-cache\local-token`. `POST /shutd
 To remove every trace from a machine: `nx-azure-cache logout` (refresh token, keyring or file),
 then delete the config directory (`config.toml`, `local-token`) and the log directory (see
 [Config](#config) and [Troubleshooting](#troubleshooting)).
+
+## Releasing
+
+One version for the Gateway and the three npm packages ([ADR 0006](docs/adr/0006-npm-publication-from-ci-approved-by-hand.md)),
+with `Cargo.toml` as the source:
+
+```sh
+pnpm version:set 1.2.3   # writes Cargo.toml, Cargo.lock and the three npm/*/package.json
+```
+
+Commit that change alone and merge it through a pull request, then tag the merge commit on
+`main` and push the tag:
+
+```sh
+git tag v1.2.3 origin/main
+git push origin v1.2.3
+```
+
+The `Publish` workflow runs the CI checks, refuses a tag that disagrees with the files, builds
+the Windows and static Linux binaries, then stages the three packages on npm through trusted
+publishing (no token). Each staged version stays private until the maintainer approves it on
+npmjs.com with 2FA; approve the Platform packages before `nx-azure-cache`.
 
 ## License
 

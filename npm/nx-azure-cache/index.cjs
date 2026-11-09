@@ -1,10 +1,9 @@
-// nx-azure-cache, Activation plugin, version 0.1.0
+// nx-azure-cache, Activation plugin
 // https://github.com/stevebeauge/nx-azure-cache
 //
-// Copy into the Workspace's `tools/`, then declare it in `nx.json`:
-//   {"plugin": "./tools/nx-azure-cache.cjs", "options": {"workspace": "<workspace>"}}
-// Shipped as `.cjs`: a Workspace with `"type": "module"` would load a `.js` as an ES module,
-// and its `require` would make every `nx` command fail.
+// Declared in the Workspace's `nx.json` by its package name:
+//   {"plugin": "nx-azure-cache", "options": {"workspace": "<workspace>"}}
+// Shipped as `.cjs`: a Workspace with `"type": "module"` would load a `.js` as an ES module.
 //
 // Before tasks run, starts the Gateway if none is running or if it is older than this plugin
 // (ADR 0005), then sets the remote cache URL if the Gateway is healthy, and sets nothing
@@ -17,7 +16,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const VERSION = '0.1.0';
+const { version: VERSION } = require('./package.json');
 const SERVER = 'NX_SELF_HOSTED_REMOTE_CACHE_SERVER';
 const TOKEN = 'NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN';
 /** How long a run waits for a Gateway it started. */
@@ -55,12 +54,12 @@ function readToken(env) {
   }
 }
 
-/** Gateway binary: `NX_AZURE_CACHE_BIN`, else the platform package (#2). */
+/** Gateway binary: `NX_AZURE_CACHE_BIN`, else the Platform package, else `null`. */
 function binaryPath(env) {
   if (env.NX_AZURE_CACHE_BIN) return env.NX_AZURE_CACHE_BIN;
   const exe = process.platform === 'win32' ? 'nx-azure-cache.exe' : 'nx-azure-cache';
   try {
-    return require.resolve(`nx-azure-cache-${process.platform}-${process.arch}/${exe}`);
+    return require.resolve(`@nx-azure-cache/${process.platform}-${process.arch}/${exe}`);
   } catch {
     return null;
   }
@@ -176,4 +175,4 @@ async function preTasksExecution(options) {
   }
 }
 
-module.exports = { name: 'nx-azure-cache', preTasksExecution };
+module.exports = { name: 'nx-azure-cache', preTasksExecution, binaryPath, SETTINGS };

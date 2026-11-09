@@ -69,9 +69,6 @@ const reset = () => nx(['reset'], false);
 const build = (daemon, sel = '', extra = {}) => nx(['run', 'proj:build'], daemon, { E2E_SEL: sel, ...extra });
 
 before(async () => {
-  // As in a real Workspace: the plugin is copied under `tools/`.
-  fs.mkdirSync(path.join(ROOT, 'tools'), { recursive: true });
-  fs.copyFileSync(path.join(ROOT, '..', 'nx-azure-cache.cjs'), path.join(ROOT, 'tools', 'nx-azure-cache.cjs'));
   configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nx-azure-cache-e2e-'));
   fs.mkdirSync(path.join(configDir, 'nx-azure-cache'));
   fs.writeFileSync(path.join(configDir, 'nx-azure-cache', 'local-token'), TOKEN_VALUE);
