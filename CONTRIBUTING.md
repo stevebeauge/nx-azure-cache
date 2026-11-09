@@ -33,6 +33,8 @@ bash ci/test-start.sh   # CI start/report scripts, after pnpm build:linux (Docke
 ## Conventions
 
 - Everything in English: code, comments, displayed and logged messages, tests, docs.
+- Run `cargo fmt` before committing: CI enforces `cargo fmt --check` and
+  `cargo clippy --all-targets -- -D warnings` on every pull request.
 - Use the glossary terms (Gateway, Workspace, Entry, Identity…) and the terms it avoids.
 - A decision that is hard to reverse gets an ADR in `docs/adr/`, in the same format as the
   existing ones.

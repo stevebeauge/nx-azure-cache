@@ -175,7 +175,10 @@ async fn stop_when_idle(state: Arc<AppState>, limit: Duration) {
     loop {
         let deadline = *state.last_request.lock().unwrap() + limit;
         if tokio::time::Instant::now() >= deadline {
-            journal::line(&format!("stopping: no request for {} min", limit.as_secs() / 60));
+            journal::line(&format!(
+                "stopping: no request for {} min",
+                limit.as_secs() / 60
+            ));
             state.stop.notify_one();
             return;
         }
@@ -206,7 +209,10 @@ mod tests {
         assert!(!watcher.is_finished(), "stopped 40 s after a request");
         tokio::time::sleep(Duration::from_secs(30)).await;
         tokio::task::yield_now().await;
-        assert!(watcher.is_finished(), "still running 70 s after the last request");
+        assert!(
+            watcher.is_finished(),
+            "still running 70 s after the last request"
+        );
         // The stop is kept even when nobody waits for it yet.
         tokio::time::timeout(Duration::from_secs(1), state.stop.notified())
             .await
