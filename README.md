@@ -194,7 +194,7 @@ machine's Gateway, and an `nx-azure-cache` command. The Gateway binary comes fro
 package, `@nx-azure-cache/win32-x64` or `@nx-azure-cache/linux-x64` (static musl), installed as
 an optional dependency only on its platform, without any install script. Other platforms (macOS,
 arm64) get no binary: the plugin sets nothing and says so. No authentication is needed to
-install. The plugin runs on Nx 22.4.1 as well as 23.2.1 (e2e tests), but Nx 23.0.2 is the
+install. The plugin is tested (e2e) on Nx 22.4.1, 23.2.1 and 24.0.5, but Nx 23.0.2 is the
 recommended minimum: earlier versions have a zip-slip flaw when extracting Entries.
 
 1. Add the package to the Workspace's dev dependencies (npm, pnpm and Bun work as is):
@@ -258,8 +258,9 @@ The package's command runs the Gateway binary from the Workspace, for example
 `NX_AZURE_CACHE_*` variables; variables already set win. Without a readable `nx.json`, the binary
 runs with the environment unchanged. Arguments, output and exit code pass through.
 
-Plugin tests (unit, command, version script, then e2e on an Nx 23.2.1 workspace that declares
-the plugin by its package name, with and without the daemon):
+Plugin tests (unit, command, version script, then e2e on one workspace per tested Nx version,
+`nx-plugin/e2e/nx22`, `nx23` and `nx24`, each declaring the plugin by its package name, with and
+without the daemon):
 
 ```sh
 pnpm test:plugin

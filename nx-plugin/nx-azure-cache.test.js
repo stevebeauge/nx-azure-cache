@@ -238,6 +238,23 @@ test('pre-existing URL honored', async () => {
   assert.equal(lines.length, 1);
 });
 
+test('URL set by an earlier run of the same process: assigned again', async () => {
+  await gateway(json(HEALTHY));
+  await preTasksExecution({ workspace: 'd' });
+  // Nx 22 with the daemon: the plugin worker outlives the run, and only the assignments made
+  // during the hook (recorded by a proxy on `process.env`) reach the client.
+  const assigned = [];
+  const env = process.env;
+  process.env = new Proxy(env, { set: (t, k, v) => ((t[k] = v), assigned.push(k), true) });
+  try {
+    await preTasksExecution({ workspace: 'd' });
+  } finally {
+    process.env = env;
+  }
+  assert.deepEqual(assigned.sort(), [SERVER, TOKEN].sort());
+  assert.deepEqual(lines, []);
+});
+
 test('workspace missing or invalid', async () => {
   await gateway(json(HEALTHY));
   await preTasksExecution({});

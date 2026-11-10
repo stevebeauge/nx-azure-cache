@@ -1,0 +1,8 @@
+{
+  "name": "nx-azure-cache-e2e-nx24",
+  "private": true,
+  "devDependencies": {
+    "nx": "24.0.5",
+    "nx-azure-cache": "link:../../../npm/nx-azure-cache"
+  }
+}
