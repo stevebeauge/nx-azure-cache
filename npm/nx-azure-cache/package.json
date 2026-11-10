@@ -21,7 +21,8 @@
   },
   "files": [
     "index.cjs",
-    "bin.cjs"
+    "bin.cjs",
+    "ci"
   ],
   "optionalDependencies": {
     "@nx-azure-cache/linux-x64": "0.1.0",

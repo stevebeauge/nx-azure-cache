@@ -233,7 +233,7 @@ Before each run, the plugin queries `http://127.0.0.1:<port>/health` (200 ms at 
   starts its own. A newer or equal Gateway is used as is.
 - **Binary**: `NX_AZURE_CACHE_BIN`, otherwise the Platform package
   `@nx-azure-cache/<platform>-<arch>` resolved next to the plugin.
-- **CI** (`CI` set): it starts nothing; the CI templates start the Gateway.
+- **CI** (`CI` set): it starts nothing; the [CI start script](#ci) starts the Gateway.
 - A Gateway started by another Workspace keeps that Workspace's settings: one storage account
   per machine is assumed.
 
@@ -265,8 +265,110 @@ the plugin by its package name, with and without the daemon):
 pnpm test:plugin
 ```
 
-In Azure Pipelines CI (Linux agents), the templates in [`ci/`](ci/README.md) start the Gateway on
-behalf of the service connection and print its report at the end of the job.
+### CI
+
+In CI the plugin starts nothing: two scripts shipped in the package start the Gateway on behalf
+of the CI's Identity and print its report at the end of the job. They run the Gateway of the
+package version in the Workspace's lockfile. **Linux x64 agents only**, after `pnpm install`.
+Copy one of the snippets below once into the pipeline.
+
+Azure Pipelines (`pipelines` Identity):
+
+```yaml
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+  - script: pnpm install --frozen-lockfile
+  # AzureCLI@2 references the service connection and sets the AZURESUBSCRIPTION_* variables the
+  # Gateway reads. It removes them at the end of the step; the Gateway keeps its copy.
+  - task: AzureCLI@2
+    displayName: 'nx-azure-cache: start the Gateway'
+    continueOnError: true # Safe fallback: a broken service connection does not fail the job
+    inputs:
+      azureSubscription: <service connection>
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: bash node_modules/nx-azure-cache/ci/start.sh
+    env:
+      NX_AZURE_CACHE_ACCOUNT: <account>
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken) # secret: never exported without this mapping
+  - script: pnpm exec nx affected -t lint test build
+  - script: bash node_modules/nx-azure-cache/ci/report.sh
+    displayName: 'nx-azure-cache: report'
+    condition: always()
+```
+
+GitHub Actions (`github` Identity, see [GitHub Actions](#github-actions) for the federated
+credential):
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      NX_AZURE_CACHE_ACCOUNT: <account>
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: 'nx-azure-cache: start the Gateway'
+        run: bash node_modules/nx-azure-cache/ci/start.sh
+        continue-on-error: true # Safe fallback
+      - run: pnpm exec nx affected -t lint test build
+      - name: 'nx-azure-cache: report'
+        if: always()
+        run: bash node_modules/nx-azure-cache/ci/report.sh
+```
+
+Prerequisites:
+
+- Azure Pipelines: an Azure Resource Manager **service connection** with **workload identity
+  federation**, created with the **Entra issuer** (the `vstoken.dev.azure.com` issuer is retired
+  on 2027-07-01); Azure CLI on the agent (present on hosted agents).
+- GitHub Actions: `permissions: id-token: write`, and `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` of
+  an identity whose federated credential matches the job.
+- The identity holds a **write role on the container** (Storage Blob Data Contributor at
+  container scope; see [`docs/runbook-azure.md`](docs/runbook-azure.md)).
+- The Workspace declares the Activation plugin ([above](#enable-the-cache-in-a-workspace)): it
+  is what connects Nx to the Gateway.
+
+What `start.sh` does:
+
+- Finds the Gateway binary of the installed Platform package, like the plugin does
+  (`NX_AZURE_CACHE_BIN` wins), and selects the CI's Identity (`pipelines` or `github`) unless
+  `NX_AZURE_CACHE_CREDENTIAL` is set.
+- If a Gateway already answers on the port (host shared by several agents: it belongs to another
+  job), it does not adopt it: a warning, `NX_AZURE_CACHE_DISABLED=1` set for the next steps, and
+  the job runs on its local cache.
+- Starts `serve` in the background, stdout and stderr redirected to `nx-azure-cache.log` in the
+  agent's temp directory (`Agent.TempDirectory`, `RUNNER_TEMP`). It serves the following steps;
+  the agent kills it at the end of the job.
+- If the Gateway is not ready after 60 s, or anything else fails: a warning, the reason
+  (`status`), exit code 0, and the job goes on with the local cache (**Safe fallback**).
+- No secret is written to the job log. The Gateway process keeps `SYSTEM_ACCESSTOKEN` (Azure
+  Pipelines) or `ACTIONS_ID_TOKEN_REQUEST_TOKEN` (GitHub Actions) in its environment, readable
+  by the agent's user: harmless on a hosted agent (disposable VM), to keep in mind on a shared
+  agent.
+
+`report.sh` prints `status` (health, Identity, write state, per-Workspace stats) and the last 50
+lines of the log, excluding the `/health` and `/stats` probes. It never fails.
+
+**Release pipelines do not start the Gateway**: a `release` never reads the cache, so it never
+ships a `dist` coming from the cache ([ADR 0001](docs/adr/0001-trust-model.md)).
+
+Local test of both scripts, outside any CI, as Azure Pipelines then as GitHub Actions (Docker;
+a Gateway that never becomes ready, then a second start that finds it already there):
+
+```sh
+pnpm build:linux && bash ci/test-start.sh
+```
 
 ## Troubleshooting
 
