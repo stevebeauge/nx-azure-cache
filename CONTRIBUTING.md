@@ -7,7 +7,8 @@ The project is a work in progress: open an issue before a large change.
 - the Gateway crate at the root (`src/`, `tests/`);
 - the Activation plugin in `nx-plugin/` (one dependency-free `.cjs`, `node:test` tests, e2e
   workspace in `nx-plugin/e2e/`);
-- the Azure Pipelines templates in `ci/`;
+- the npm packages in `npm/`, the CI start and report scripts in `npm/nx-azure-cache/ci/`, their
+  Docker test in `ci/`;
 - the scripts in `scripts/`, run through the root `package.json`.
 
 Vocabulary is in [`GLOSSARY.md`](GLOSSARY.md), decisions in [`docs/adr/`](docs/adr/).
@@ -25,7 +26,7 @@ pnpm build          # Gateway, release build
 pnpm test           # Gateway tests (cargo test)
 pnpm test:plugin    # plugin unit tests, then e2e on an Nx workspace
 pnpm build:linux    # static Linux binary in dist/ (Docker)
-bash ci/test-start.sh   # CI start/report scripts, after pnpm build:linux (Docker, Python + PyYAML)
+bash ci/test-start.sh   # CI start/report scripts, after pnpm build:linux (Docker)
 ```
 
 `pnpm test` and `pnpm test:plugin` must pass before a pull request.
