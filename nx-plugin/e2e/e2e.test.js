@@ -14,6 +14,7 @@ const path = require('node:path');
 // One Nx workspace per tested version (`nx22`, `nx23`, `nx24`), members of this pnpm workspace.
 const WORKSPACES = fs.readdirSync(__dirname).filter((d) => /^nx\d+$/.test(d));
 const TOKEN_VALUE = 'cd'.repeat(32);
+const GATEWAY_VERSION = require('../../npm/nx-azure-cache/package.json').version;
 
 for (const ws of WORKSPACES) {
   const ROOT = path.join(__dirname, ws);
@@ -164,7 +165,7 @@ for (const ws of WORKSPACES) {
           const first = await build(daemon, '', extra);
           assert.equal(first.code, 0, first.out);
           await reset(); // also stops the Nx daemon, parent of the Gateway when it is used
-          assert.equal((await health(port))?.version, '0.1.0', 'the Gateway did not outlive Nx');
+          assert.equal((await health(port))?.version, GATEWAY_VERSION, 'the Gateway did not outlive Nx');
 
           const second = await build(daemon, '', extra);
           assert.equal(second.code, 0, second.out);
