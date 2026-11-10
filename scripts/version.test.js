@@ -31,6 +31,8 @@ afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 const run = (...args) => spawnSync(process.execPath, [path.join(dir, 'scripts/version.js'), ...args], { encoding: 'utf8' });
 const read = (f) => fs.readFileSync(path.join(dir, f), 'utf8');
 const pkg = (f) => JSON.parse(read(`npm/${f}/package.json`));
+// The repository's own version, read before a test alters a file: the tests hold for any release.
+const tag = () => `v${pkg('nx-azure-cache').version}`;
 
 test('set: writes one version to Cargo.toml, Cargo.lock and the three packages', () => {
   const r = run('1.2.3');
@@ -50,7 +52,7 @@ test('set: refuses a version that is not x.y.z', () => {
   const r = run('1.2');
   assert.equal(r.status, 1);
   assert.match(r.stderr, /x\.y\.z/);
-  assert.equal(run('--check', 'v0.1.0').status, 0, 'files left unchanged');
+  assert.equal(run('--check', tag()).status, 0, 'files left unchanged');
 });
 
 test('--check: the repository agrees with itself', () => {
@@ -68,7 +70,7 @@ test('--check: fails when one package.json disagrees', () => {
   const f = path.join(dir, 'npm/linux-x64/package.json');
   const p = JSON.parse(fs.readFileSync(f, 'utf8'));
   fs.writeFileSync(f, JSON.stringify({ ...p, version: '0.0.1' }));
-  const r = run('--check', 'v0.1.0');
+  const r = run('--check', tag());
   assert.equal(r.status, 1);
   assert.match(r.stderr, /npm\/linux-x64\/package\.json/);
 });
@@ -78,7 +80,7 @@ test('--check: fails when an optional dependency disagrees', () => {
   const p = JSON.parse(fs.readFileSync(f, 'utf8'));
   p.optionalDependencies['@nx-azure-cache/win32-x64'] = '0.0.1';
   fs.writeFileSync(f, JSON.stringify(p));
-  const r = run('--check', 'v0.1.0');
+  const r = run('--check', tag());
   assert.equal(r.status, 1);
   assert.match(r.stderr, /@nx-azure-cache\/win32-x64/);
 });

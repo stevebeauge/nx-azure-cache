@@ -1,6 +1,6 @@
 {
   "name": "@nx-azure-cache/linux-x64",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Linux x64 Gateway binary of nx-azure-cache (static musl)",
   "license": "MIT",
   "repository": {

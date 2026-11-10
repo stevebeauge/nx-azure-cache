@@ -1,6 +1,6 @@
 {
   "name": "nx-azure-cache",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Nx remote cache stored in Azure Blob Storage, served by a local gateway",
   "keywords": [
     "nx",
@@ -25,7 +25,7 @@
     "ci"
   ],
   "optionalDependencies": {
-    "@nx-azure-cache/linux-x64": "0.1.0",
-    "@nx-azure-cache/win32-x64": "0.1.0"
+    "@nx-azure-cache/linux-x64": "0.2.0",
+    "@nx-azure-cache/win32-x64": "0.2.0"
   }
 }
