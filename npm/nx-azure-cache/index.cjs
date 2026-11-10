@@ -148,10 +148,16 @@ async function activate(options, env) {
   if (!/^[0-9a-f]{64}$/i.test(token)) return `unreadable local token (${tokenPath(env)})`;
 
   // Assignments, not a return value: this is what Nx propagates.
-  env[SERVER] = `http://127.0.0.1:${port}/${workspace}`;
+  env[SERVER] = ownServer = `http://127.0.0.1:${port}/${workspace}`;
   env[TOKEN] = token;
   return null;
 }
+
+/**
+ * URL this process set on an earlier run. With the daemon, Nx 22 keeps the plugin worker and its
+ * `process.env` across runs, but only passes on the assignments made during the hook.
+ */
+let ownServer = null;
 
 async function preTasksExecution(options) {
   // The hook never throws: an exception would fail the Nx command.
@@ -162,7 +168,7 @@ async function preTasksExecution(options) {
       console.log('[nx-azure-cache] remote cache off: NX_AZURE_CACHE_DISABLED');
       return;
     }
-    if (env[SERVER]) {
+    if (env[SERVER] && env[SERVER] !== ownServer) {
       console.log(`[nx-azure-cache] ${SERVER} already set, plugin has no effect`);
       return;
     }
